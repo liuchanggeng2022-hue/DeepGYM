@@ -1,14 +1,14 @@
 # DeepGYM 技术路线与选择表
 
 版本：0.1
-状态：已选择并实现方案 A；macOS 本地测试包已验证
+状态：桌面方案 A 与训练存储方案 C 均已实现；macOS 本地测试包已验证
 更新日期：2026-07-21
 
 ## 1. 先说结论
 
 三套方案都能做 macOS 和 Windows 应用。产品所有者已于 2026-07-21 选择 **方案 A：Tauri 2 + React + TypeScript**：界面开发效率高、安装包与运行内存通常更克制，也便于复用当前 Web 原型。
 
-当前仓库已安装并配置 Tauri 2、Rust stable、React、TypeScript 与 Vite。方案 B 和 C 保留在本文中，作为决策记录和未来复盘依据。
+当前仓库已安装并配置 Tauri 2、Rust stable、React、TypeScript 与 Vite。下表的方案 B 和 C 保留为桌面技术栈决策记录；用户后来选择的“存储方案 C：SQLite”是另一项决策，不代表改用 Flutter。
 
 ## 2. 方案对比
 
@@ -132,24 +132,35 @@
 
 - 动作元数据和用户训练数据分开存储；
 - 动作 ID 沿用来源数据，训练记录引用动作 ID；
-- 写入训练记录使用事务，防止训练中途崩溃造成半条数据；
+- 组输入自动保存，结构性写入失败时回滚本次新增内容；
 - 数据库每次升级都有迁移版本；
 - 用户数据默认本地保存，未来云同步作为可选能力；
-- 媒体路径通过配置提供，开发预览、已授权本地包、未来 CDN 可切换，不写死在业务逻辑里。
+- 已选择媒体方案 A：媒体根地址集中配置并固定到经过验证的上游版本，应用在线加载当前可见媒体，不把媒体打进安装包。
 
-## 6. 建议的数据模型（阶段 2）
+## 6. 训练记录存储方案决策
+
+产品所有者于 2026-07-21 选择了 **存储方案 C：SQLite**：
+
+| 存储方案 | 优点 | 缺点 | 结果 |
+| --- | --- | --- | --- |
+| A. localStorage | 无需原生插件，浏览器预览最简单 | 容量、查询和迁移能力有限，不适合作为正式桌面数据层 | 仅用于浏览器开发预览 |
+| B. Tauri Store / JSON 文件 | 接入简单，设置类数据直观 | 训练历史增多后查询、约束和迁移较弱 | 未选择 |
+| C. SQLite | 结构清晰、可查询、可迁移，适合长期历史与未来统计 | 增加 SQL 插件和数据库维护成本 | 已选择并实现 |
+
+正式 Tauri 应用通过 `@tauri-apps/plugin-sql` 和 Rust `tauri-plugin-sql` 访问 `deepgym.db`。数据库在应用启动时预加载，并自动执行版本化迁移。浏览器开发预览无法使用 Tauri 插件，因此只在该模式下回退到 localStorage。
+
+## 7. 已实现的数据模型（训练记录 MVP）
 
 | 表 | 作用 | 关键字段 |
 | --- | --- | --- |
-| `exercise` | 只读动作目录 | `id`, `name`, `body_part`, `equipment`, `target`, `media_path` |
-| `workout_session` | 一次训练 | `id`, `started_at`, `ended_at`, `note` |
+| 动作 JSON | 只读动作目录 | `id`, `name`, `body_part`, `equipment`, `target`, `image`, `gif_url` |
+| `workout_session` | 一次训练 | `id`, `started_at`, `ended_at` |
 | `workout_exercise` | 本次训练中的动作与顺序 | `id`, `session_id`, `exercise_id`, `position` |
-| `workout_set` | 每一组 | `id`, `workout_exercise_id`, `weight`, `reps`, `completed_at` |
-| `personal_record` | 可重算的个人记录缓存 | `exercise_id`, `metric`, `value`, `achieved_at` |
+| `workout_set` | 每一组 | `id`, `workout_exercise_id`, `position`, `weight_kg`, `reps`, `completed`, `completed_at` |
 
-重量需要同时保存数值和单位；内部可统一换算，但不能只保存展示文本。训练总结应由组记录计算得出，不另存一份可能与原始记录冲突的数据。
+第一版内部统一使用 kg，因此数据库只保存重量数值，不保存展示文本。训练总结由已完成且次数有效的组实时计算，不另存一份可能与原始记录冲突的数据。应用只允许存在一场进行中的训练，相关唯一性、非负数值和外键关系由数据库约束。
 
-## 7. 当前原型与迁移方式
+## 8. 当前原型与迁移方式
 
 早期 `prototype/` 使用原生 HTML、CSS 和 JavaScript，`scripts/dev-server.mjs` 只依赖 Node.js 标准库。它保留为验收基线。正式应用代码已迁移到 `src/`，由 React + TypeScript + Vite 构建，并由 `src-tauri/` 中的 Tauri 宿主封装。
 
@@ -158,30 +169,34 @@
 1. 在不下载或选定框架前，让动作指导功能可以运行并被确认；
 2. 固化搜索、筛选、详情、媒体状态和版权署名的产品行为。
 
-当前 React 组件已复用原型的视觉、数据映射和验收标准；后续功能直接在正式应用中迭代。
+当前 React 组件已复用原型的视觉、数据映射和验收标准；训练记录 MVP 只在正式 React/Tauri 应用中实现，早期原型不再增加新业务功能。
 
-## 8. 发布与测试要求
+## 9. 发布与测试要求
 
 - macOS 和 Windows 都要有真实系统测试，不能只在一台 Mac 上推断 Windows 可用；
-- 自动化覆盖数据解析、搜索筛选、训练容量计算和数据库迁移；
+- 自动化覆盖数据解析、关键训练界面结构和数据库迁移；
 - 端到端覆盖“找动作 → 加入训练 → 记录 → 完成 → 总结”；
+- 原生应用测试需要实际读取 SQLite，不能只验证浏览器 localStorage 回退；
 - 发布前完成 macOS 签名与公证、Windows 安装包签名；
-- 媒体许可未解决时，不制作公开安装包；
+- 每次公开发布前，确认媒体方案 A 的远程加载方式和本次发布条件符合已取得的媒体许可；
 - 健身动作文字在正式发布前由合格教练抽样或全量审核。
 
-## 9. 技术决策结果
+## 10. 技术决策结果
 
 - [x] A — Tauri 2 + React + TypeScript（2026-07-21 已选择）
 - [ ] B — Electron + React + TypeScript
 - [ ] C — Flutter + Dart
 
+媒体交付已选择 **媒体方案 A：固定上游版本远程加载**。训练记录已选择 **存储方案 C：SQLite**。三套方案使用了不同编号体系，后续讨论时应同时写明“桌面 / 媒体 / 存储”，避免混淆。
+
 决策理由：桌面优先、希望较轻量，并最大化复用当前原型。若未来 12 个月明确要求推出 iPhone / Android 版本，需要重新评估移动端路线，但不影响当前桌面阶段开始。
 
-## 10. 官方依据
+## 11. 官方依据
 
 - [Tauri 2 入门与体积说明](https://v2.tauri.app/start/)
 - [Tauri 2 开发前置条件](https://v2.tauri.app/start/prerequisites/)
 - [Tauri 2 进程模型与系统 WebView](https://v2.tauri.app/concept/process-model/)
+- [Tauri SQL 插件](https://v2.tauri.app/plugin/sql/)
 - [Electron 官方介绍](https://www.electronjs.org/docs/latest/)
 - [Electron 选择理由与架构说明](https://www.electronjs.org/docs/latest/why-electron)
 - [Flutter 桌面支持](https://docs.flutter.dev/platform-integration/desktop)
