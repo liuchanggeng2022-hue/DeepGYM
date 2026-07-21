@@ -7,11 +7,17 @@ const dataPath = resolve(root, "vendor/exercises-dataset/data/exercises.json");
 const htmlPath = resolve(root, "prototype/index.html");
 const reactHtmlPath = resolve(root, "index.html");
 const reactAppPath = resolve(root, "src/App.tsx");
+const workoutViewPath = resolve(root, "src/WorkoutViews.tsx");
+const workoutStoragePath = resolve(root, "src/workout-storage.ts");
+const workoutMigrationPath = resolve(root, "src-tauri/migrations/0001_workouts.sql");
 
 const data = JSON.parse(await readFile(dataPath, "utf8"));
 const html = await readFile(htmlPath, "utf8");
 const reactHtml = await readFile(reactHtmlPath, "utf8");
 const reactApp = await readFile(reactAppPath, "utf8");
+const workoutView = await readFile(workoutViewPath, "utf8");
+const workoutStorage = await readFile(workoutStoragePath, "utf8");
+const workoutMigration = await readFile(workoutMigrationPath, "utf8");
 const requiredFields = [
   "id", "name", "body_part", "equipment", "target", "instructions",
   "instruction_steps", "image", "gif_url", "attribution",
@@ -40,8 +46,26 @@ for (const expectedText of ["DeepGYM", "root", "/src/main.tsx"]) {
   if (!reactHtml.includes(expectedText)) failures.push(`React 入口缺少关键内容：${expectedText}。`);
 }
 
-for (const expectedText of ["DeepGYM", "© Gym visual", "searchInput", "ExerciseDialog"]) {
+for (const expectedText of ["DeepGYM", "searchInput", "ExerciseDialog"]) {
   if (!reactApp.includes(expectedText)) failures.push(`React 应用缺少关键内容：${expectedText}。`);
+}
+
+if (reactApp.includes("gymvisual.com") || reactApp.includes("© Gym visual")) {
+  failures.push("React 应用仍显示已要求移除的逐动图或页脚媒体署名链接。");
+}
+
+for (const expectedText of ["完成训练并生成总结", "SQLite 本地保存", "训练容量", "训练记录", "确认移除"]) {
+  if (!workoutView.includes(expectedText)) failures.push(`训练记录界面缺少关键内容：${expectedText}。`);
+}
+
+if (reactApp.includes("window.confirm")) failures.push("训练记录仍依赖可能被桌面 WebView 阻止的系统确认窗口。");
+
+for (const expectedText of ["sqlite:deepgym.db", "saveSets", "completeSession", "listHistory"]) {
+  if (!workoutStorage.includes(expectedText)) failures.push(`训练存储缺少关键内容：${expectedText}。`);
+}
+
+for (const table of ["workout_session", "workout_exercise", "workout_set"]) {
+  if (!workoutMigration.includes(`CREATE TABLE IF NOT EXISTS ${table}`)) failures.push(`SQLite 迁移缺少表：${table}。`);
 }
 
 if (failures.length) {
@@ -50,5 +74,5 @@ if (failures.length) {
   if (failures.length > 30) console.error(`- 另有 ${failures.length - 30} 项未显示。`);
   process.exitCode = 1;
 } else {
-  console.log(`检查通过：${data.length} 条动作、${ids.size} 个唯一 ID、媒体署名与页面关键结构完整。`);
+  console.log(`检查通过：${data.length} 条动作、${ids.size} 个唯一 ID、媒体来源数据、训练记录界面与 SQLite 迁移结构完整。`);
 }

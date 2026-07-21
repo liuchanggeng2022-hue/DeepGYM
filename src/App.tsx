@@ -14,6 +14,10 @@ import {
   SOURCE_BASE,
 } from "./exercise-data";
 import type { Exercise, IndexedExercise } from "./types";
+import { TodayWorkoutView, WorkoutHistoryView } from "./WorkoutViews";
+import { createWorkoutRepository } from "./workout-storage";
+import { summarizeDay } from "./workout-summary";
+import type { AppView, WorkoutRepository, WorkoutSession, WorkoutSet } from "./workout-types";
 
 const DATA_URL = "/data/exercises.json";
 
@@ -50,8 +54,8 @@ function ExerciseCard({ exercise, onOpen }: { exercise: IndexedExercise; onOpen:
         <span className="card-arrow" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9" /></svg>
         </span>
-        <h3>{exerciseName(exercise)}</h3>
-        <p className="card-english">{translated ? exercise.name : "中文常用名待整理"}</p>
+        <span className="card-title">{exerciseName(exercise)}</span>
+        <span className="card-english">{translated ? exercise.name : "中文常用名待整理"}</span>
         <span className="card-meta">
           <span title="目标肌群">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /></svg>
@@ -67,7 +71,19 @@ function ExerciseCard({ exercise, onOpen }: { exercise: IndexedExercise; onOpen:
   );
 }
 
-function ExerciseDialog({ exercise, onClose }: { exercise: Exercise | null; onClose: () => void }) {
+function ExerciseDialog({
+  exercise,
+  onClose,
+  onAdd,
+  added,
+  adding,
+}: {
+  exercise: Exercise | null;
+  onClose: () => void;
+  onAdd: (exercise: Exercise) => void;
+  added: boolean;
+  adding: boolean;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [mediaPaused, setMediaPaused] = useState(false);
   const [mediaFailed, setMediaFailed] = useState(false);
@@ -133,9 +149,6 @@ function ExerciseDialog({ exercise, onClose }: { exercise: Exercise | null; onCl
                 </button>
               )}
             </div>
-            <p className="media-attribution">
-              <a href="https://gymvisual.com/" target="_blank" rel="noreferrer">© Gym visual — https://gymvisual.com/</a>
-            </p>
           </div>
 
           <article className="detail-content">
@@ -179,8 +192,8 @@ function ExerciseDialog({ exercise, onClose }: { exercise: Exercise | null; onCl
             </aside>
 
             <div className="detail-actions">
-              <button className="primary-button" type="button" disabled title="今日训练将在第二阶段开发">
-                加入今日训练 · 下一阶段
+              <button className="primary-button" type="button" disabled={added || adding} onClick={() => onAdd(exercise)}>
+                {added ? "已在今日训练中" : adding ? "正在加入…" : "加入今日训练"}
               </button>
               <a className="source-link" href={`${SOURCE_BASE}/videos`} target="_blank" rel="noreferrer">在数据源中查看</a>
             </div>
@@ -200,7 +213,24 @@ export default function App() {
   const [selected, setSelected] = useState<IndexedExercise | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [view, setView] = useState<AppView>("library");
+  const [workoutRepository, setWorkoutRepository] = useState<WorkoutRepository | null>(null);
+  const [activeSession, setActiveSession] = useState<WorkoutSession | null>(null);
+  const [workoutHistory, setWorkoutHistory] = useState<WorkoutSession[]>([]);
+  const [workoutLoading, setWorkoutLoading] = useState(true);
+  const [workoutBusy, setWorkoutBusy] = useState(false);
+  const [workoutError, setWorkoutError] = useState("");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const activeSessionRef = useRef<WorkoutSession | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
+  const dirtyDraftRef = useRef(false);
+  const saveGenerationRef = useRef(0);
   const runningInTauri = "__TAURI_INTERNALS__" in window;
+
+  const setActiveWorkout = (session: WorkoutSession | null) => {
+    activeSessionRef.current = session;
+    setActiveSession(session);
+  };
 
   const loadExercises = async () => {
     setLoading(true);
@@ -220,6 +250,35 @@ export default function App() {
 
   useEffect(() => {
     void loadExercises();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const initializeWorkoutStorage = async () => {
+      setWorkoutLoading(true);
+      try {
+        const repository = await createWorkoutRepository();
+        const [session, history] = await Promise.all([
+          repository.getActiveSession(),
+          repository.listHistory(),
+        ]);
+        if (!active) return;
+        setWorkoutRepository(repository);
+        setActiveWorkout(session);
+        setWorkoutHistory(history);
+        setWorkoutError("");
+      } catch (reason) {
+        if (!active) return;
+        setWorkoutError(reason instanceof Error ? reason.message : "训练记录存储初始化失败。");
+      } finally {
+        if (active) setWorkoutLoading(false);
+      }
+    };
+    void initializeWorkoutStorage();
+    return () => {
+      active = false;
+      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -249,6 +308,13 @@ export default function App() {
     });
   }, [exercises]);
 
+  const exerciseLookup = useMemo(
+    () => new Map(exercises.map((exercise) => [exercise.id, exercise])),
+    [exercises],
+  );
+
+  const todaySummary = useMemo(() => summarizeDay(workoutHistory), [workoutHistory]);
+
   const queryTokens = normalize(query).split(" ").filter(Boolean);
   const filtered = useMemo(() => exercises.filter((exercise) => {
     const matchesQuery = queryTokens.length === 0 || queryTokens.every((token) => exercise.searchIndex.includes(token));
@@ -268,27 +334,162 @@ export default function App() {
     resetPagination();
   };
 
+  const persistDraft = async () => {
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const session = activeSessionRef.current;
+    if (!workoutRepository || !session || !dirtyDraftRef.current) return;
+    const generation = saveGenerationRef.current;
+    const sets = session.exercises.flatMap((exercise) => exercise.sets);
+    await workoutRepository.saveSets(sets);
+    if (generation === saveGenerationRef.current) dirtyDraftRef.current = false;
+    setLastSavedAt(new Date());
+  };
+
+  const scheduleDraftSave = () => {
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      void persistDraft().catch((reason) => {
+        setWorkoutError(reason instanceof Error ? reason.message : "训练记录自动保存失败。");
+      });
+    }, 450);
+  };
+
+  const handleSetChange = (setId: string, patch: Partial<WorkoutSet>) => {
+    const session = activeSessionRef.current;
+    if (!session) return;
+    const next: WorkoutSession = {
+      ...session,
+      exercises: session.exercises.map((exercise) => ({
+        ...exercise,
+        sets: exercise.sets.map((set) => set.id === setId ? { ...set, ...patch } : set),
+      })),
+    };
+    setActiveWorkout(next);
+    dirtyDraftRef.current = true;
+    saveGenerationRef.current += 1;
+    scheduleDraftSave();
+  };
+
+  const refreshActiveWorkout = async () => {
+    if (!workoutRepository) return;
+    const session = await workoutRepository.getActiveSession();
+    dirtyDraftRef.current = false;
+    setActiveWorkout(session);
+  };
+
+  const handleAddExercise = async (exercise: Exercise) => {
+    if (!workoutRepository) {
+      setWorkoutError("本地训练记录仍在准备，请稍后再试。");
+      return;
+    }
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      const result = await workoutRepository.addExercise(exercise.id);
+      setActiveWorkout(result.session);
+      setSelected(null);
+      setView("today");
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "加入今日训练失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleAddSet = async (workoutExerciseId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      await workoutRepository.addSet(workoutExerciseId);
+      await refreshActiveWorkout();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "添加组失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleDeleteSet = async (setId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      await workoutRepository.deleteSet(setId);
+      await refreshActiveWorkout();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "删除组失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleRemoveExercise = async (workoutExerciseId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      await workoutRepository.removeExercise(workoutExerciseId);
+      await refreshActiveWorkout();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "移除动作失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleFinishWorkout = async () => {
+    const session = activeSessionRef.current;
+    if (!workoutRepository || !session) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      await workoutRepository.completeSession(session.id, new Date().toISOString());
+      const history = await workoutRepository.listHistory();
+      setWorkoutHistory(history);
+      setActiveWorkout(await workoutRepository.getActiveSession());
+      setLastSavedAt(new Date());
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "完成训练失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const activeExerciseIds = new Set(activeSession?.exercises.map((exercise) => exercise.exerciseId) || []);
+  const topbarStatus = view === "library"
+    ? error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作已就绪`
+    : workoutError ? "训练记录需要处理" : workoutLoading ? "正在打开本地记录…" : workoutRepository?.mode === "sqlite" ? "SQLite 本地记录已就绪" : "浏览器预览记录已就绪";
+
   return (
     <>
       <div className="app-layout">
         <aside className="sidebar" aria-label="主导航">
-          <a className="brand" href="/" aria-label="DeepGYM 首页">
+          <a className="brand" href="#exercise-library" aria-label="DeepGYM 首页" onClick={(event) => { event.preventDefault(); setView("library"); }}>
             <DumbbellIcon />
             <span>Deep<span>GYM</span></span>
           </a>
 
           <nav className="main-nav">
-            <a className="nav-item active" href="#exercise-library" aria-current="page">
+            <button className={`nav-item${view === "library" ? " active" : ""}`} type="button" aria-current={view === "library" ? "page" : undefined} onClick={() => setView("library")}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6M7 6v12M17 6v12M20 9v6M7 12h10" /></svg>
               <span>动作指导</span>
-            </a>
-            <button className="nav-item" type="button" disabled title="将在第二阶段开发">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Z" /></svg>
-              <span>今日训练</span><span className="nav-badge">下一阶段</span>
             </button>
-            <button className="nav-item" type="button" disabled title="将在第二阶段开发">
+            <button className={`nav-item${view === "today" ? " active" : ""}`} type="button" aria-current={view === "today" ? "page" : undefined} onClick={() => setView("today")}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Z" /></svg>
+              <span>今日训练</span>{activeSession && <span className="nav-badge">{activeSession.exercises.length}</span>}
+            </button>
+            <button className={`nav-item${view === "history" ? " active" : ""}`} type="button" aria-current={view === "history" ? "page" : undefined} onClick={() => setView("history")}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9M12 19V5M19 19v-7" /></svg>
-              <span>训练记录</span>
+              <span>训练记录</span>{workoutHistory.length > 0 && <span className="nav-badge">{workoutHistory.length}</span>}
             </button>
           </nav>
 
@@ -296,41 +497,25 @@ export default function App() {
             <span className="status-dot" aria-hidden="true"></span>
             <div>
               <strong>{runningInTauri ? "Tauri 桌面模式" : "浏览器开发预览"}</strong>
-              <p>元数据随应用提供，动图需要网络。</p>
+              <p>训练记录保存在本机，动图需要网络。</p>
             </div>
           </div>
         </aside>
 
-        <main className="main-content" id="exercise-library">
+        <main className="main-content">
           <header className="topbar">
-            <button className="mobile-brand" type="button" aria-label="DeepGYM">
+            <button className="mobile-brand" type="button" aria-label="DeepGYM" onClick={() => setView("library")}>
               <DumbbellIcon small /><strong>DeepGYM</strong>
             </button>
             <div className="topbar-state" aria-label="数据状态">
-              <span className={`status-dot${error ? " error" : ""}`} aria-hidden="true"></span>
-              <span>{error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作已就绪`}</span>
+              <span className={`status-dot${view === "library" ? error ? " error" : "" : workoutError ? " error" : ""}`} aria-hidden="true"></span>
+              <span>{topbarStatus}</span>
             </div>
             <button className="avatar" type="button" disabled aria-label="个人资料将在后续开放">DG</button>
           </header>
 
-          <div className="page-wrap">
-            <section className="license-banner" aria-label="媒体许可提醒">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.6 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" /></svg>
-              <p><strong>开发预览</strong> · 动图版权属于 Gym visual，正式发布前需确认独立许可。</p>
-              <a href="https://github.com/hasaneyldrm/exercises-dataset/blob/main/LICENSE" target="_blank" rel="noreferrer">查看说明</a>
-            </section>
-
-            <section className="hero" aria-labelledby="page-title">
-              <div>
-                <p className="eyebrow">EXERCISE LIBRARY / 动作库</p>
-                <h1 id="page-title">练得更准，<span>每一下都有依据。</span></h1>
-                <p className="hero-copy">搜索动作、查看循环示范和中文分步说明。先理解动作，再开始训练。</p>
-              </div>
-              <div className="hero-stat" aria-label="动作库统计">
-                <strong>{loading ? "—" : exercises.length.toLocaleString("zh-CN")}</strong>
-                <span>个动作可查</span><small>10 种身体部位 · 20+ 类器械</small>
-              </div>
-            </section>
+          {view === "library" && <div className="page-wrap" id="exercise-library">
+            <h1 className="sr-only">动作指导与动作库</h1>
 
             <section className="finder" aria-label="查找动作">
               <label className="search-field" htmlFor="searchInput">
@@ -426,13 +611,45 @@ export default function App() {
 
             <footer className="page-footer">
               <p>动作元数据来自 <a href="https://github.com/hasaneyldrm/exercises-dataset" target="_blank" rel="noreferrer">hasaneyldrm/exercises-dataset</a></p>
-              <p>媒体：<a href="https://gymvisual.com/" target="_blank" rel="noreferrer">© Gym visual — https://gymvisual.com/</a></p>
             </footer>
-          </div>
+          </div>}
+
+          {view === "today" && (
+            <TodayWorkoutView
+              session={activeSession}
+              todaySummary={todaySummary}
+              exerciseLookup={exerciseLookup}
+              busy={workoutBusy}
+              error={workoutError}
+              storageMode={workoutRepository?.mode || null}
+              lastSavedAt={lastSavedAt}
+              onBrowse={() => setView("library")}
+              onSetChange={handleSetChange}
+              onAddSet={(id) => void handleAddSet(id)}
+              onDeleteSet={(id) => void handleDeleteSet(id)}
+              onRemoveExercise={(id) => void handleRemoveExercise(id)}
+              onFinish={() => void handleFinishWorkout()}
+            />
+          )}
+
+          {view === "history" && (
+            <WorkoutHistoryView
+              sessions={workoutHistory}
+              exerciseLookup={exerciseLookup}
+              error={workoutError}
+              onBrowse={() => setView("library")}
+            />
+          )}
         </main>
       </div>
 
-      <ExerciseDialog exercise={selected} onClose={() => setSelected(null)} />
+      <ExerciseDialog
+        exercise={selected}
+        onClose={() => setSelected(null)}
+        onAdd={(exercise) => void handleAddExercise(exercise)}
+        added={Boolean(selected && activeExerciseIds.has(selected.id))}
+        adding={workoutBusy || workoutLoading}
+      />
     </>
   );
 }
