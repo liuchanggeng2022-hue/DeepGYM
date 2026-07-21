@@ -50,9 +50,11 @@ for (const expectedText of ["DeepGYM", "© Gym visual", "searchInput", "Exercise
   if (!reactApp.includes(expectedText)) failures.push(`React 应用缺少关键内容：${expectedText}。`);
 }
 
-for (const expectedText of ["完成训练并生成总结", "SQLite 本地保存", "训练容量", "训练记录"]) {
+for (const expectedText of ["完成训练并生成总结", "SQLite 本地保存", "训练容量", "训练记录", "确认移除"]) {
   if (!workoutView.includes(expectedText)) failures.push(`训练记录界面缺少关键内容：${expectedText}。`);
 }
+
+if (reactApp.includes("window.confirm")) failures.push("训练记录仍依赖可能被桌面 WebView 阻止的系统确认窗口。");
 
 for (const expectedText of ["sqlite:deepgym.db", "saveSets", "completeSession", "listHistory"]) {
   if (!workoutStorage.includes(expectedText)) failures.push(`训练存储缺少关键内容：${expectedText}。`);

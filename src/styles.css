@@ -1450,6 +1450,48 @@ kbd {
   background: #fff0ec;
 }
 
+.remove-exercise-confirm {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px 6px 10px;
+  color: #784234;
+  background: #fff4f0;
+  border: 1px solid #f0c9bd;
+  border-radius: 11px;
+  font-size: 9px;
+  font-weight: 680;
+}
+
+.danger-confirm-button,
+.cancel-remove-button {
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 780;
+}
+
+.danger-confirm-button {
+  color: #fff;
+  background: #a84d35;
+  border: 1px solid #963f2a;
+}
+
+.cancel-remove-button {
+  color: #555d57;
+  background: #fff;
+  border: 1px solid #d8ddd5;
+}
+
+.danger-confirm-button:disabled,
+.cancel-remove-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .set-table {
   padding: 8px 20px 4px;
 }
@@ -1895,6 +1937,11 @@ noscript {
   .finish-workout-panel {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .remove-exercise-confirm {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .set-table {

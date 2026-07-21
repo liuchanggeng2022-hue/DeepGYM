@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { exerciseName, mediaUrl } from "./exercise-data";
 import { summarizeSessions } from "./workout-summary";
 import type { IndexedExercise } from "./types";
@@ -134,6 +135,7 @@ export function TodayWorkoutView({
   onRemoveExercise,
   onFinish,
 }: TodayWorkoutProps) {
+  const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
   const draftSummary = session ? summarizeSessions([session]) : null;
   const hasCompletedSet = Boolean(session?.exercises.some((exercise) => exercise.sets.some((set) => set.completed)));
 
@@ -171,7 +173,23 @@ export function TodayWorkoutView({
                       {exercise && <img src={mediaUrl(exercise.image)} alt="" />}
                       <div><span>动作 {workoutExercise.position + 1}</span><h2>{exercise ? exerciseName(exercise) : `动作 ${workoutExercise.exerciseId}`}</h2><p>{exercise?.name || "动作信息加载中"}</p></div>
                     </div>
-                    <button className="danger-text-button" type="button" disabled={busy} onClick={() => onRemoveExercise(workoutExercise.id)}>移除动作</button>
+                    {pendingRemovalId === workoutExercise.id ? (
+                      <div className="remove-exercise-confirm" role="group" aria-label="确认移除动作">
+                        <span>同时删除该动作的组记录？</span>
+                        <button
+                          className="danger-confirm-button"
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setPendingRemovalId(null);
+                            onRemoveExercise(workoutExercise.id);
+                          }}
+                        >确认移除</button>
+                        <button className="cancel-remove-button" type="button" disabled={busy} onClick={() => setPendingRemovalId(null)}>取消</button>
+                      </div>
+                    ) : (
+                      <button className="danger-text-button" type="button" disabled={busy} onClick={() => setPendingRemovalId(workoutExercise.id)}>移除动作</button>
+                    )}
                   </header>
 
                   <div className="set-table" role="table" aria-label={`${exercise ? exerciseName(exercise) : "动作"}组记录`}>

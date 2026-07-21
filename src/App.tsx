@@ -434,7 +434,7 @@ export default function App() {
   };
 
   const handleRemoveExercise = async (workoutExerciseId: string) => {
-    if (!workoutRepository || !window.confirm("移除此动作及其尚未完成的组记录？")) return;
+    if (!workoutRepository) return;
     setWorkoutBusy(true);
     setWorkoutError("");
     try {
