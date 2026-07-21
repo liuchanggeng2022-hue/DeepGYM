@@ -25,7 +25,7 @@
 - 媒体版权属于 [Gym visual](https://gymvisual.com/)；
 - 媒体不适用 MIT License；
 - 只能保持 180×180 分辨率；
-- 每次使用必须保留 `© Gym visual — https://gymvisual.com/`；
+- 在没有另行许可时，每次使用必须保留 `© Gym visual — https://gymvisual.com/`；
 - 克隆上游仓库本身不授予第三方复用许可；
 - 应阅读 [Gym visual Terms & Conditions](https://gymvisual.com/content/3-terms-and-conditions-of-use)，并在需要时直接取得自己的许可。
 
@@ -39,7 +39,7 @@
 
 - 应用通过固定版本的 GitHub Raw 地址加载当前可见动作的缩略图和动图；
 - 不把上游 `images/` 或 `videos/` 批量复制到 DeepGYM 仓库、安装包或自有 CDN；
-- 界面在动作详情和全局页脚保留 `© Gym visual — https://gymvisual.com/`；
+- 数据文件保留来源与许可元数据；根据产品所有者已取得的正式复用许可，React 应用不展示逐动图或全局页脚外链署名；
 - 媒体需要联网加载；加载失败时，动作文字指导仍然可用；
 - 上游地址的可用性不由 DeepGYM 控制，修改媒体根地址或升级数据版本时必须重新验证。
 
@@ -47,7 +47,7 @@
 
 - [x] 产品所有者确认已取得 Gym visual 许可；
 - [x] 已选择媒体方案 A，不把媒体复制进仓库、安装包或自有 CDN；
-- [x] 应用内媒体使用位置保留规定署名；
+- [x] 产品所有者确认许可允许当前无可见外链署名的界面方式；
 - [x] 自动检查验证 1,324 条记录均含署名；
 - [ ] 产品所有者已将授权证明安全归档；
 - [ ] 每次正式发布前，确认具体平台、地区、期限和商业模式符合授权原文；

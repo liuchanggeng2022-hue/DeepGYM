@@ -239,8 +239,8 @@ export function WorkoutHistoryView({ sessions, exerciseLookup, error, onBrowse }
   return (
     <div className="page-wrap workout-page">
       <header className="subpage-header">
-        <div><p className="eyebrow">WORKOUT HISTORY / 训练记录</p><h1>每一次完成，都留在这里。</h1><p>历史记录只保存在当前电脑，不会上传到云端。</p></div>
-        <div className="history-count"><strong>{sessions.length}</strong><span>次已完成训练</span></div>
+        <div><p className="eyebrow">WORKOUT HISTORY / 训练记录</p><h1>每一次完成，都留在这里。</h1><p>记录会先保存在本机，联网后自动同步到你的账号。</p></div>
+        <div className="history-count"><strong>{sessions.length}</strong><span>条训练记录</span></div>
       </header>
       {error && <div className="workout-error" role="alert">{error}</div>}
       {sessions.length === 0 && (
@@ -252,7 +252,7 @@ export function WorkoutHistoryView({ sessions, exerciseLookup, error, onBrowse }
           return (
             <details className="history-card" key={session.id}>
               <summary>
-                <div><span>{session.endedAt ? formatDate(session.endedAt) : "未完成"}</span><strong>{formatTime(session.startedAt)} – {session.endedAt ? formatTime(session.endedAt) : "进行中"}</strong></div>
+                <div><span>{session.endedAt ? formatDate(session.endedAt) : "未完成记录"}</span><strong>{formatTime(session.startedAt)} – {session.endedAt ? formatTime(session.endedAt) : "已保留"}</strong></div>
                 <div className="history-summary-metrics"><span>{summary.exerciseCount} 个动作</span><span>{summary.setCount} 组</span><span>{summary.repCount} 次</span><span>{formatVolume(summary.volumeKg)}</span></div>
                 <span className="history-expand" aria-hidden="true">⌄</span>
               </summary>

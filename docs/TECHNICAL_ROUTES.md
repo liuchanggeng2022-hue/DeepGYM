@@ -134,7 +134,7 @@
 - 动作 ID 沿用来源数据，训练记录引用动作 ID；
 - 组输入自动保存，结构性写入失败时回滚本次新增内容；
 - 数据库每次升级都有迁移版本；
-- 用户数据默认本地保存，未来云同步作为可选能力；
+- 用户数据按账号先写本地 SQLite，联网后自动同步 Supabase；
 - 已选择媒体方案 A：媒体根地址集中配置并固定到经过验证的上游版本，应用在线加载当前可见媒体，不把媒体打进安装包。
 
 ## 6. 训练记录存储方案决策
@@ -154,24 +154,36 @@
 | 表 | 作用 | 关键字段 |
 | --- | --- | --- |
 | 动作 JSON | 只读动作目录 | `id`, `name`, `body_part`, `equipment`, `target`, `image`, `gif_url` |
-| `workout_session` | 一次训练 | `id`, `started_at`, `ended_at` |
-| `workout_exercise` | 本次训练中的动作与顺序 | `id`, `session_id`, `exercise_id`, `position` |
-| `workout_set` | 每一组 | `id`, `workout_exercise_id`, `position`, `weight_kg`, `reps`, `completed`, `completed_at` |
+| `workout_session` | 一次训练 | `id`, `owner_user_id`, `status`, `device_id`, `started_at`, `ended_at`, `updated_at`, `deleted_at` |
+| `workout_exercise` | 本次训练中的动作与顺序 | `id`, `owner_user_id`, `session_id`, `exercise_id`, `position`, `updated_at`, `deleted_at` |
+| `workout_set` | 每一组 | `id`, `owner_user_id`, `workout_exercise_id`, `position`, `weight_kg`, `reps`, `completed`, `completed_at`, `updated_at`, `deleted_at` |
+| `sync_outbox` | 本地待上传操作 | `owner_user_id`, `entity_type`, `entity_id`, `queued_at` |
+| `sync_state` | 每个账号的拉取游标 | `owner_user_id`, `last_pulled_at`, `last_synced_at` |
+| `device_identity` | 当前安装的稳定设备 ID | `id`, `created_at` |
 
-第一版内部统一使用 kg，因此数据库只保存重量数值，不保存展示文本。训练总结由已完成且次数有效的组实时计算，不另存一份可能与原始记录冲突的数据。应用只允许存在一场进行中的训练，相关唯一性、非负数值和外键关系由数据库约束。
+第一版内部统一使用 kg，因此数据库只保存重量数值，不保存展示文本。训练总结由已完成且次数有效的组实时计算，不另存一份可能与原始记录冲突的数据。结构写入通过 SQLite 触发器在同一事务内进入 outbox；删除使用软删除，便于传播到其他设备。云端表全部带 `user_id` 并启用 RLS。多设备可暂时产生多场进行中训练，用户选定一场后，其余转为未完成历史且不计入总结。
 
-## 8. 当前原型与迁移方式
+## 8. 账号与同步架构
+
+- Supabase Auth：邮箱密码、注册验证码与恢复验证码；
+- 会话存储：Supabase 自定义 storage adapter 调用 Tauri 命令，落入系统凭据管理器；
+- 同步顺序：上传训练 → 动作 → 组，再按游标拉取三张云端表；
+- 冲突规则：同一 ID 采用较新的 `client_updated_at`，拉取游标保留 60 秒重叠窗口；
+- 账号删除：客户端重新验证密码后调用受保护 Edge Function，由服务端权限删除 Auth 用户，外键级联删除训练数据；
+- 安全边界：publishable key 可进入客户端，secret/service role 永不进入应用、日志或 Git。
+
+## 9. 当前原型与迁移方式
 
 早期 `prototype/` 使用原生 HTML、CSS 和 JavaScript，`scripts/dev-server.mjs` 只依赖 Node.js 标准库。它保留为验收基线。正式应用代码已迁移到 `src/`，由 React + TypeScript + Vite 构建，并由 `src-tauri/` 中的 Tauri 宿主封装。
 
 保留原型的目的有两个：
 
 1. 在不下载或选定框架前，让动作指导功能可以运行并被确认；
-2. 固化搜索、筛选、详情、媒体状态和版权署名的产品行为。
+2. 固化搜索、筛选、详情与媒体状态等产品行为；早期原型中的可见署名仅作为历史记录保留，正式 React 应用按已取得的许可不展示外链署名。
 
 当前 React 组件已复用原型的视觉、数据映射和验收标准；训练记录 MVP 只在正式 React/Tauri 应用中实现，早期原型不再增加新业务功能。
 
-## 9. 发布与测试要求
+## 10. 发布与测试要求
 
 - macOS 和 Windows 都要有真实系统测试，不能只在一台 Mac 上推断 Windows 可用；
 - 自动化覆盖数据解析、关键训练界面结构和数据库迁移；
@@ -181,7 +193,7 @@
 - 每次公开发布前，确认媒体方案 A 的远程加载方式和本次发布条件符合已取得的媒体许可；
 - 健身动作文字在正式发布前由合格教练抽样或全量审核。
 
-## 10. 技术决策结果
+## 11. 技术决策结果
 
 - [x] A — Tauri 2 + React + TypeScript（2026-07-21 已选择）
 - [ ] B — Electron + React + TypeScript
@@ -191,7 +203,7 @@
 
 决策理由：桌面优先、希望较轻量，并最大化复用当前原型。若未来 12 个月明确要求推出 iPhone / Android 版本，需要重新评估移动端路线，但不影响当前桌面阶段开始。
 
-## 11. 官方依据
+## 12. 官方依据
 
 - [Tauri 2 入门与体积说明](https://v2.tauri.app/start/)
 - [Tauri 2 开发前置条件](https://v2.tauri.app/start/prerequisites/)
