@@ -149,9 +149,6 @@ function ExerciseDialog({
                 </button>
               )}
             </div>
-            <p className="media-attribution">
-              <a href="https://gymvisual.com/" target="_blank" rel="noreferrer">© Gym visual — https://gymvisual.com/</a>
-            </p>
           </div>
 
           <article className="detail-content">
@@ -614,7 +611,6 @@ export default function App() {
 
             <footer className="page-footer">
               <p>动作元数据来自 <a href="https://github.com/hasaneyldrm/exercises-dataset" target="_blank" rel="noreferrer">hasaneyldrm/exercises-dataset</a></p>
-              <p>媒体：<a href="https://gymvisual.com/" target="_blank" rel="noreferrer">© Gym visual — https://gymvisual.com/</a></p>
             </footer>
           </div>}
 

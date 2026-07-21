@@ -46,8 +46,12 @@ for (const expectedText of ["DeepGYM", "root", "/src/main.tsx"]) {
   if (!reactHtml.includes(expectedText)) failures.push(`React 入口缺少关键内容：${expectedText}。`);
 }
 
-for (const expectedText of ["DeepGYM", "© Gym visual", "searchInput", "ExerciseDialog"]) {
+for (const expectedText of ["DeepGYM", "searchInput", "ExerciseDialog"]) {
   if (!reactApp.includes(expectedText)) failures.push(`React 应用缺少关键内容：${expectedText}。`);
+}
+
+if (reactApp.includes("gymvisual.com") || reactApp.includes("© Gym visual")) {
+  failures.push("React 应用仍显示已要求移除的逐动图或页脚媒体署名链接。");
 }
 
 for (const expectedText of ["完成训练并生成总结", "SQLite 本地保存", "训练容量", "训练记录", "确认移除"]) {
@@ -70,5 +74,5 @@ if (failures.length) {
   if (failures.length > 30) console.error(`- 另有 ${failures.length - 30} 项未显示。`);
   process.exitCode = 1;
 } else {
-  console.log(`检查通过：${data.length} 条动作、${ids.size} 个唯一 ID、媒体署名、训练记录界面与 SQLite 迁移结构完整。`);
+  console.log(`检查通过：${data.length} 条动作、${ids.size} 个唯一 ID、媒体来源数据、训练记录界面与 SQLite 迁移结构完整。`);
 }
