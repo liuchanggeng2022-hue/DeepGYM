@@ -6,4 +6,4 @@
 - Included locally: `data/exercises.json`, `LICENSE`, `NOTICE.md`
 - Not included locally: `images/`, `videos/`
 
-DeepGYM 的本地开发原型根据数据中的相对路径，从上述固定 commit 的 GitHub Raw 地址加载可见媒体。媒体不属于 MIT License；请先阅读本目录的 `LICENSE` 和 `NOTICE.md`。
+DeepGYM 根据数据中的相对路径，从上述固定 commit 的 GitHub Raw 地址加载当前可见媒体，不把媒体文件纳入仓库或安装包。媒体不属于 MIT License；产品所有者已确认取得所需许可，具体工程约束见 `docs/DATA_AND_MEDIA_LICENSE.md`，并应同时阅读本目录的 `LICENSE` 和 `NOTICE.md`。
