@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="DeepGYM 动作指导原型：搜索、筛选并查看健身动作动图与中文步骤。"
+    />
+    <title>DeepGYM · 动作指导</title>
+    <link rel="stylesheet" href="/prototype/styles.css" />
+    <script type="module" src="/prototype/app.js"></script>
+  </head>
+  <body>
+    <div class="app-layout">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="/" aria-label="DeepGYM 首页">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 44 44" role="img">
+              <path d="M9 17v10M14 13v18M30 13v18M35 17v10M14 22h16" />
+            </svg>
+          </span>
+          <span>Deep<span>GYM</span></span>
+        </a>
+
+        <nav class="main-nav">
+          <a class="nav-item active" href="#exercise-library" aria-current="page">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9v6M7 6v12M17 6v12M20 9v6M7 12h10" />
+            </svg>
+            <span>动作指导</span>
+          </a>
+          <button class="nav-item" type="button" disabled title="将在第二阶段开发">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Z" />
+            </svg>
+            <span>今日训练</span>
+            <span class="nav-badge">下一阶段</span>
+          </button>
+          <button class="nav-item" type="button" disabled title="将在第二阶段开发">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 19V9M12 19V5M19 19v-7" />
+            </svg>
+            <span>训练记录</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-note">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div>
+            <strong>本地开发预览</strong>
+            <p>元数据保存在本地，动图需要网络。</p>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content" id="exercise-library">
+        <header class="topbar">
+          <button class="mobile-brand" type="button" aria-label="DeepGYM">
+            <span class="brand-mark small" aria-hidden="true">
+              <svg viewBox="0 0 44 44"><path d="M9 17v10M14 13v18M30 13v18M35 17v10M14 22h16" /></svg>
+            </span>
+            <strong>DeepGYM</strong>
+          </button>
+          <div class="topbar-state" aria-label="数据状态">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="dataStatus">正在读取动作数据…</span>
+          </div>
+          <button class="avatar" type="button" disabled aria-label="个人资料将在后续开放">DG</button>
+        </header>
+
+        <div class="page-wrap">
+          <section class="license-banner" aria-label="媒体许可提醒">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 9v4M12 17h.01M10.3 3.6 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" />
+            </svg>
+            <p><strong>开发预览</strong> · 动图版权属于 Gym visual，正式发布前需确认独立许可。</p>
+            <a href="/docs/DATA_AND_MEDIA_LICENSE.md" target="_blank">查看说明</a>
+          </section>
+
+          <section class="hero" aria-labelledby="page-title">
+            <div>
+              <p class="eyebrow">EXERCISE LIBRARY / 动作库</p>
+              <h1 id="page-title">练得更准，<span>每一下都有依据。</span></h1>
+              <p class="hero-copy">搜索动作、查看循环示范和中文分步说明。先理解动作，再开始训练。</p>
+            </div>
+            <div class="hero-stat" aria-label="动作库统计">
+              <strong id="heroCount">—</strong>
+              <span>个动作可查</span>
+              <small>10 种身体部位 · 20+ 类器械</small>
+            </div>
+          </section>
+
+          <section class="finder" aria-label="查找动作">
+            <label class="search-field" for="searchInput">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16 16 4 4" />
+              </svg>
+              <input
+                id="searchInput"
+                type="search"
+                autocomplete="off"
+                placeholder="搜索动作、目标肌群或器械，例如：卧推 / bench press"
+              />
+              <kbd>/</kbd>
+            </label>
+
+            <div class="filter-line">
+              <div class="category-scroll" id="categoryFilters" aria-label="按身体部位筛选"></div>
+              <label class="select-wrap" for="equipmentFilter">
+                <span class="sr-only">按器械筛选</span>
+                <select id="equipmentFilter">
+                  <option value="">全部器械</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
+              </label>
+            </div>
+          </section>
+
+          <section class="results" aria-live="polite" aria-busy="true" id="resultsSection">
+            <div class="section-heading">
+              <div>
+                <h2>动作列表</h2>
+                <p id="resultsSummary">正在加载完整动作库…</p>
+              </div>
+              <button class="text-button" id="clearFilters" type="button" hidden>清除筛选</button>
+            </div>
+
+            <div class="loading-grid" id="loadingState" aria-label="动作加载中">
+              <div class="skeleton-card"></div>
+              <div class="skeleton-card"></div>
+              <div class="skeleton-card"></div>
+              <div class="skeleton-card"></div>
+              <div class="skeleton-card"></div>
+              <div class="skeleton-card"></div>
+            </div>
+
+            <div class="empty-state" id="errorState" hidden>
+              <span class="empty-icon">!</span>
+              <h3>动作数据没有加载成功</h3>
+              <p id="errorMessage">请确认本地服务仍在运行，然后重试。</p>
+              <button class="primary-button compact" id="retryButton" type="button">重新加载</button>
+            </div>
+
+            <div class="empty-state" id="emptyState" hidden>
+              <span class="empty-icon search-empty">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" /></svg>
+              </span>
+              <h3>没有找到匹配动作</h3>
+              <p>试试减少关键词，或清除身体部位和器械筛选。</p>
+              <button class="secondary-button compact" id="emptyClearButton" type="button">清除全部条件</button>
+            </div>
+
+            <div class="exercise-grid" id="exerciseGrid"></div>
+            <div class="load-more-wrap" id="loadMoreWrap" hidden>
+              <button class="secondary-button" id="loadMoreButton" type="button">显示更多动作</button>
+              <p id="visibleSummary"></p>
+            </div>
+          </section>
+
+          <footer class="page-footer">
+            <p>动作元数据来自 <a href="https://github.com/hasaneyldrm/exercises-dataset" target="_blank" rel="noreferrer">hasaneyldrm/exercises-dataset</a></p>
+            <p>媒体：<a href="https://gymvisual.com/" target="_blank" rel="noreferrer">© Gym visual — https://gymvisual.com/</a></p>
+          </footer>
+        </div>
+      </main>
+    </div>
+
+    <dialog class="exercise-dialog" id="exerciseDialog" aria-labelledby="detailTitle">
+      <div class="dialog-shell">
+        <button class="dialog-close" id="dialogClose" type="button" aria-label="关闭动作详情">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+        </button>
+
+        <div class="detail-media-column">
+          <div class="detail-media" id="detailMedia">
+            <img id="detailImage" src="" alt="" />
+            <div class="media-error" id="mediaError" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM8 13l2-2 3 3 2-2 3 3M9 9h.01" /></svg>
+              <strong>动图暂时无法加载</strong>
+              <span>文字步骤仍可正常查看</span>
+            </div>
+            <button class="media-toggle" id="mediaToggle" type="button">
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12" /></svg>
+              <span>暂停动图</span>
+            </button>
+          </div>
+          <p class="media-attribution">
+            <a href="https://gymvisual.com/" target="_blank" rel="noreferrer">© Gym visual — https://gymvisual.com/</a>
+          </p>
+        </div>
+
+        <article class="detail-content">
+          <p class="eyebrow">MOVEMENT GUIDE / 动作指导</p>
+          <h2 id="detailTitle"></h2>
+          <p class="detail-english-name" id="detailEnglishName"></p>
+          <div class="detail-tags" id="detailTags"></div>
+
+          <dl class="muscle-overview">
+            <div>
+              <dt>主要目标</dt>
+              <dd id="detailTarget"></dd>
+            </div>
+            <div>
+              <dt>辅助肌群</dt>
+              <dd id="detailSecondary"></dd>
+            </div>
+          </dl>
+
+          <section class="steps-section" aria-labelledby="stepsTitle">
+            <div class="content-heading">
+              <h3 id="stepsTitle">动作步骤</h3>
+              <span id="languageState">中文指导</span>
+            </div>
+            <ol class="instruction-list" id="instructionList"></ol>
+          </section>
+
+          <aside class="safety-note">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.4 8.4 8 9 4.6-.6 8-4 8-9V6l-8-3Z" /><path d="m9 12 2 2 4-5" /></svg>
+            <p><strong>训练提醒</strong> 使用可控重量并保持呼吸。如动作引起疼痛，请立即停止并咨询合格专业人士。</p>
+          </aside>
+
+          <div class="detail-actions">
+            <button class="primary-button" type="button" disabled title="今日训练将在第二阶段开发">加入今日训练 · 下一阶段</button>
+            <a class="source-link" id="sourceLink" href="#" target="_blank" rel="noreferrer">在数据源中查看</a>
+          </div>
+        </article>
+      </div>
+    </dialog>
+
+    <noscript>DeepGYM 动作库需要 JavaScript 才能运行。</noscript>
+  </body>
+</html>
