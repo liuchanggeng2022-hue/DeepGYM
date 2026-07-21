@@ -1,6 +1,6 @@
 # DeepGYM Supabase 配置说明
 
-本文件记录 Dashboard 必须与仓库保持一致的配置。目标区域为 Singapore；第一轮内测使用 Supabase 默认邮件服务，公开发布前必须改用专用 SMTP。
+本文件记录 Dashboard 必须与仓库保持一致的配置。DeepGYM 托管项目已于 2026-07-21 在 Singapore 区域创建，数据库迁移、RLS、邮箱登录安全参数和删除账号函数已配置。当前待完成项是专用 SMTP 与邮件模板；Supabase 控制台目前不允许使用默认邮件服务的项目编辑模板。
 
 ## 1. 创建项目与本机环境
 
@@ -25,12 +25,12 @@ supabase/migrations/202607210001_auth_sync.sql
 
 ## 3. 邮箱验证码
 
-在 Authentication 中保持邮箱确认开启，并将最低密码长度设为 10。将邮件模板分别替换为：
+在 Authentication 中保持邮箱确认开启，将最低密码长度设为 10，并将 Email OTP length 设为 6。将邮件模板分别替换为：
 
 - 注册确认：`supabase/email-templates/confirm-signup.html`
 - 密码恢复：`supabase/email-templates/recovery.html`
 
-模板使用 `{{ .Token }}`，应用要求输入 6 位验证码。内测时检查垃圾邮件目录、验证码有效期和重新发送限流是否符合预期。
+模板使用 `{{ .Token }}`，应用要求输入 6 位验证码。当前 Supabase Dashboard 要求先配置 Custom SMTP 才允许编辑模板；在完成 SMTP 前，默认邮件仍会发送确认链接，无法完成应用内验证码闭环。内测时还需检查垃圾邮件目录、验证码有效期和重新发送限流是否符合预期。
 
 ## 4. 删除账号函数
 
@@ -40,7 +40,7 @@ supabase/migrations/202607210001_auth_sync.sql
 supabase/functions/delete-account/index.ts
 ```
 
-保持 JWT 验证开启。函数从请求 JWT 获取当前用户，再使用仅存在于函数环境的服务端权限删除该 Auth 用户。部署后不要把服务端密钥复制回客户端。
+函数使用 `withSupabase({ auth: "user" })` 验证当前用户 JWT，并通过运行环境自动注入的 `supabaseAdmin` 删除该 Auth 用户。Dashboard 中的旧版 `Verify JWT with legacy secret` 开关保持关闭，由函数内的当前 JWT 验证承担鉴权；不要把服务端密钥复制回客户端。
 
 ## 5. 联调顺序
 

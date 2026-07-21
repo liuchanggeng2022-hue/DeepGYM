@@ -117,7 +117,12 @@ for (const expectedText of ["credential_get", "credential_set", "credential_dele
 }
 
 if (!deleteAccount.includes("auth.admin.deleteUser")) failures.push("删除账号函数没有调用服务端 Auth 删除接口。");
-if (!deleteAccount.includes("auth.getUser")) failures.push("删除账号函数没有先验证请求 JWT。");
+if (
+  !deleteAccount.includes("auth.getUser") &&
+  !deleteAccount.includes('withSupabase({ auth: "user" }')
+) {
+  failures.push("删除账号函数没有先验证请求 JWT。");
+}
 if (!gitignore.includes(".env.local")) failures.push(".env.local 尚未被 Git 忽略。");
 
 if (failures.length) {
