@@ -54,8 +54,8 @@ function ExerciseCard({ exercise, onOpen }: { exercise: IndexedExercise; onOpen:
         <span className="card-arrow" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9" /></svg>
         </span>
-        <h3>{exerciseName(exercise)}</h3>
-        <p className="card-english">{translated ? exercise.name : "中文常用名待整理"}</p>
+        <span className="card-title">{exerciseName(exercise)}</span>
+        <span className="card-english">{translated ? exercise.name : "中文常用名待整理"}</span>
         <span className="card-meta">
           <span title="目标肌群">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /></svg>
@@ -518,23 +518,7 @@ export default function App() {
           </header>
 
           {view === "library" && <div className="page-wrap" id="exercise-library">
-            <section className="license-banner" aria-label="媒体许可提醒">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.6 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" /></svg>
-              <p><strong>已授权在线媒体</strong> · 采用方案 A，从固定上游版本加载并保留 Gym visual 署名。</p>
-              <a href="https://github.com/hasaneyldrm/exercises-dataset/blob/main/LICENSE" target="_blank" rel="noreferrer">查看说明</a>
-            </section>
-
-            <section className="hero" aria-labelledby="page-title">
-              <div>
-                <p className="eyebrow">EXERCISE LIBRARY / 动作库</p>
-                <h1 id="page-title">练得更准，<span>每一下都有依据。</span></h1>
-                <p className="hero-copy">搜索动作、查看循环示范和中文分步说明。先理解动作，再开始训练。</p>
-              </div>
-              <div className="hero-stat" aria-label="动作库统计">
-                <strong>{loading ? "—" : exercises.length.toLocaleString("zh-CN")}</strong>
-                <span>个动作可查</span><small>10 种身体部位 · 20+ 类器械</small>
-              </div>
-            </section>
+            <h1 className="sr-only">动作指导与动作库</h1>
 
             <section className="finder" aria-label="查找动作">
               <label className="search-field" htmlFor="searchInput">

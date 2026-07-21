@@ -299,46 +299,7 @@ svg {
 .page-wrap {
   width: min(1240px, 100%);
   margin: 0 auto;
-  padding: 26px clamp(24px, 4vw, 60px) 38px;
-}
-
-.license-banner {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 10px 13px;
-  color: #555c45;
-  background: #f5f8de;
-  border: 1px solid #dce7a8;
-  border-radius: 12px;
-  font-size: 12px;
-}
-
-.license-banner svg {
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  color: #7b8d22;
-}
-
-.license-banner p {
-  margin: 0;
-}
-
-.license-banner a {
-  margin-left: auto;
-  color: #637516;
-  font-weight: 700;
-  text-underline-offset: 3px;
-  white-space: nowrap;
-}
-
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 40px;
-  padding: clamp(46px, 7vw, 82px) 0 44px;
+  padding: 32px clamp(24px, 4vw, 60px) 38px;
 }
 
 .eyebrow {
@@ -347,53 +308,6 @@ svg {
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.16em;
-}
-
-.hero h1 {
-  max-width: 750px;
-  margin: 0;
-  font-size: clamp(36px, 5vw, 68px);
-  font-weight: 850;
-  letter-spacing: -0.065em;
-  line-height: 0.99;
-}
-
-.hero h1 span {
-  color: var(--lime-dark);
-}
-
-.hero-copy {
-  max-width: 620px;
-  margin: 21px 0 0;
-  color: var(--ink-soft);
-  font-size: 15px;
-  line-height: 1.75;
-}
-
-.hero-stat {
-  display: grid;
-  min-width: 180px;
-  padding: 17px 0 2px 28px;
-  border-left: 1px solid #cdd1c7;
-}
-
-.hero-stat strong {
-  font-size: 40px;
-  font-weight: 820;
-  letter-spacing: -0.05em;
-  line-height: 1;
-}
-
-.hero-stat span {
-  margin-top: 5px;
-  font-size: 13px;
-  font-weight: 720;
-}
-
-.hero-stat small {
-  margin-top: 15px;
-  color: var(--muted);
-  font-size: 10px;
 }
 
 .finder {
@@ -532,7 +446,7 @@ kbd {
 }
 
 .results {
-  padding-top: 42px;
+  padding-top: 30px;
 }
 
 .section-heading {
@@ -576,8 +490,11 @@ kbd {
 
 .exercise-card {
   position: relative;
+  display: block;
+  width: 100%;
   min-width: 0;
   padding: 0;
+  appearance: none;
   overflow: hidden;
   color: var(--ink);
   background: var(--card);
@@ -659,8 +576,8 @@ kbd {
 
 .card-arrow {
   position: absolute;
+  top: -17px;
   right: 12px;
-  bottom: -15px;
   z-index: 2;
   display: grid;
   width: 34px;
@@ -679,30 +596,30 @@ kbd {
 
 .card-body {
   position: relative;
+  display: block;
+  width: 100%;
   padding: 18px 16px 16px;
 }
 
-.card-body h3 {
-  min-height: 25px;
-  margin: 0;
-  overflow: hidden;
+.card-title {
+  display: block;
+  min-height: 46px;
   font-size: 16px;
   font-weight: 760;
   letter-spacing: -0.02em;
   line-height: 1.45;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .card-english {
-  min-height: 17px;
+  display: block;
+  min-height: 31px;
   margin: 3px 0 14px;
-  overflow: hidden;
   color: #8a918a;
   font-size: 10px;
-  text-overflow: ellipsis;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
   text-transform: capitalize;
-  white-space: nowrap;
 }
 
 .card-meta {
@@ -721,9 +638,13 @@ kbd {
   min-width: 0;
   align-items: center;
   gap: 5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.card-meta span:last-child {
+  justify-content: flex-end;
+  text-align: right;
 }
 
 .card-meta svg {
@@ -870,9 +791,9 @@ kbd {
 }
 
 .exercise-dialog {
-  width: min(1100px, calc(100vw - 50px));
+  width: min(1320px, calc(100vw - 32px));
   max-width: none;
-  max-height: min(820px, calc(100vh - 50px));
+  max-height: min(860px, calc(100vh - 32px));
   padding: 0;
   overflow: hidden;
   color: var(--ink);
@@ -890,9 +811,9 @@ kbd {
 .dialog-shell {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(340px, 43%) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   min-height: 640px;
-  max-height: min(820px, calc(100vh - 50px));
+  max-height: min(860px, calc(100vh - 32px));
   overflow: auto;
 }
 
@@ -926,8 +847,9 @@ kbd {
 .detail-media-column {
   display: flex;
   min-height: 640px;
+  min-width: 0;
   flex-direction: column;
-  padding: 24px;
+  padding: 0;
   background:
     linear-gradient(rgb(34 40 35 / 3%) 1px, transparent 1px),
     linear-gradient(90deg, rgb(34 40 35 / 3%) 1px, transparent 1px),
@@ -937,22 +859,23 @@ kbd {
 
 .detail-media {
   position: sticky;
-  top: 24px;
+  top: 0;
   display: grid;
   min-height: 470px;
   flex: 1;
   place-items: center;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 43%, #fff 0 12%, rgb(255 255 255 / 54%) 30%, transparent 63%);
-  border: 1px solid rgb(124 133 124 / 16%);
-  border-radius: 18px;
+  background-image:
+    linear-gradient(rgb(34 40 35 / 3%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(34 40 35 / 3%) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
 .detail-media img {
-  width: 180px;
-  height: 180px;
-  max-width: 76%;
-  max-height: 76%;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
   object-fit: contain;
   image-rendering: auto;
   mix-blend-mode: multiply;
@@ -1011,8 +934,10 @@ kbd {
 }
 
 .media-attribution {
-  margin: 12px 0 0;
+  margin: 0;
+  padding: 10px 18px 12px;
   color: #777f77;
+  background: rgb(233 236 228 / 90%);
   font-size: 9px;
   text-align: center;
 }
@@ -1821,12 +1746,8 @@ noscript {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .hero h1 {
-    font-size: clamp(38px, 5.8vw, 59px);
-  }
-
   .dialog-shell {
-    grid-template-columns: minmax(300px, 40%) minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .workout-metrics {
@@ -1882,42 +1803,6 @@ noscript {
 
   .page-wrap {
     padding: 17px 18px 28px;
-  }
-
-  .license-banner {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .license-banner p {
-    width: calc(100% - 30px);
-  }
-
-  .license-banner a {
-    margin-left: 29px;
-  }
-
-  .hero {
-    grid-template-columns: 1fr;
-    gap: 25px;
-    padding: 48px 0 34px;
-  }
-
-  .hero-stat {
-    display: flex;
-    align-items: baseline;
-    gap: 9px;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-  }
-
-  .hero-stat strong {
-    font-size: 30px;
-  }
-
-  .hero-stat small {
-    display: none;
   }
 
   .finder {
