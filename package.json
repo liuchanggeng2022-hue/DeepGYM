@@ -1,0 +1,34 @@
+{
+  "name": "deepgym",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepGYM cross-platform workout guidance and tracking desktop app",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:web": "vite",
+    "dev:prototype": "node scripts/dev-server.mjs",
+    "build": "tauri build",
+    "build:mac:unsigned": "CI=true tauri build --bundles app,dmg --ci --no-sign",
+    "bundle:mac:unsigned": "CI=true tauri bundle --bundles app,dmg --ci --no-sign",
+    "build:web": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && node --check prototype/app.js && node --check scripts/dev-server.mjs && node scripts/check.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  }
+}
