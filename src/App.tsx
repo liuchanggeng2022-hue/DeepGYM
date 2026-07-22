@@ -15,11 +15,13 @@ import {
 } from "./exercise-data";
 import type { Exercise, IndexedExercise } from "./types";
 import { TodayWorkoutView, WorkoutHistoryView } from "./WorkoutViews";
-import { AccountMenu, ActiveWorkoutConflict } from "./AuthViews";
+import { AccountMenu, AccountSettingsView, ActiveWorkoutConflict } from "./AuthViews";
+import { createProfileService } from "./profile-service";
 import { SyncService } from "./sync-service";
 import { createWorkoutRepository } from "./workout-storage";
 import { summarizeDay } from "./workout-summary";
 import type { AuthService, AuthUser } from "./auth-types";
+import type { UserProfile } from "./profile-types";
 import type { AppView, SyncState, WorkoutRepository, WorkoutSession, WorkoutSet } from "./workout-types";
 
 const DATA_URL = "/data/exercises.json";
@@ -244,12 +246,19 @@ export default function App({
     status: authOffline ? "offline" : "idle",
   }));
   const [accountBusy, setAccountBusy] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState("");
   const activeSessionRef = useRef<WorkoutSession | null>(null);
   const syncServiceRef = useRef<SyncService | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyDraftRef = useRef(false);
   const saveGenerationRef = useRef(0);
   const runningInTauri = "__TAURI_INTERNALS__" in window;
+  const profileService = useMemo(
+    () => createProfileService(authService.getClient(), authUser.id),
+    [authService, authUser.id],
+  );
 
   const setActiveWorkout = (session: WorkoutSession | null) => {
     activeSessionRef.current = session;
@@ -275,6 +284,24 @@ export default function App({
   useEffect(() => {
     void loadExercises();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setProfileBusy(true);
+    setProfileError("");
+    void profileService.load()
+      .then((value) => {
+        if (active) setProfile(value);
+      })
+      .catch((reason) => {
+        if (!active) return;
+        setProfileError(reason instanceof Error ? reason.message : "个人资料加载失败。");
+      })
+      .finally(() => {
+        if (active) setProfileBusy(false);
+      });
+    return () => { active = false; };
+  }, [profileService]);
 
   useEffect(() => {
     let active = true;
@@ -534,6 +561,77 @@ export default function App({
     }
   };
 
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      await workoutRepository.deleteSession(sessionId);
+      setWorkoutHistory(await workoutRepository.listHistory());
+      await syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "删除训练记录失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    await persistDraft();
+    if (!navigator.onLine) throw new Error("当前处于离线状态，请联网后再同步。");
+    const service = syncServiceRef.current;
+    if (!service) throw new Error(workoutRepository?.mode === "browser-preview"
+      ? "浏览器预览不会上传数据，请在 DeepGYM 桌面应用中同步。"
+      : "云端同步服务尚未就绪，请稍后再试。");
+    const state = await service.syncNow();
+    if (state.status === "error" || state.status === "offline") {
+      throw new Error(state.error || "云端同步失败，本机数据不会丢失。");
+    }
+  };
+
+  const handleSaveNickname = async (nickname: string) => {
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      setProfile(await profileService.saveNickname(nickname));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "昵称保存失败。";
+      setProfileError(message);
+      throw reason;
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const handleUploadAvatar = async (file: File) => {
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      setProfile(await profileService.uploadAvatar(file));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "头像上传失败。";
+      setProfileError(message);
+      throw reason;
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      setProfile(await profileService.removeAvatar());
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "头像删除失败。";
+      setProfileError(message);
+      throw reason;
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
   const handleLogout = async () => {
     if (!workoutRepository) throw new Error("训练记录仍在准备，请稍后再试。");
     setAccountBusy(true);
@@ -600,9 +698,11 @@ export default function App({
           : syncState.pendingCount > 0
             ? `${syncState.pendingCount} 项待同步`
             : workoutRepository?.mode === "browser-preview" ? "浏览器预览不上传" : "云端已同步";
-  const topbarStatus = view === "library"
-    ? error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作 · ${syncStatusText}`
-    : workoutError ? "训练记录需要处理" : workoutLoading ? "正在打开本地记录…" : syncStatusText;
+  const topbarStatus = view === "account"
+    ? "登录与账号设置"
+    : view === "library"
+      ? error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作 · ${syncStatusText}`
+      : workoutError ? "训练记录需要处理" : workoutLoading ? "正在打开本地记录…" : syncStatusText;
 
   return (
     <>
@@ -626,6 +726,10 @@ export default function App({
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9M12 19V5M19 19v-7" /></svg>
               <span>训练记录</span>{workoutHistory.length > 0 && <span className="nav-badge">{workoutHistory.length}</span>}
             </button>
+            <button className={`nav-item${view === "account" ? " active" : ""}`} type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => setView("account")}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21c.7-4.2 3.4-6 8-6s7.3 1.8 8 6" /></svg>
+              <span>我的</span>
+            </button>
           </nav>
 
           <div className="sidebar-note">
@@ -648,6 +752,7 @@ export default function App({
             </div>
             <AccountMenu
               user={authUser}
+              profile={profile}
               syncState={syncState}
               busy={accountBusy || workoutBusy}
               onLogout={handleLogout}
@@ -778,7 +883,26 @@ export default function App({
               sessions={workoutHistory}
               exerciseLookup={exerciseLookup}
               error={workoutError}
+              busy={workoutBusy}
               onBrowse={() => setView("library")}
+              onDeleteSession={(id) => void handleDeleteSession(id)}
+            />
+          )}
+
+          {view === "account" && (
+            <AccountSettingsView
+              user={authUser}
+              profile={profile}
+              syncState={syncState}
+              busy={accountBusy || workoutBusy}
+              profileBusy={profileBusy}
+              profileError={profileError}
+              onLogout={handleLogout}
+              onDelete={handleDeleteAccount}
+              onSync={handleSyncNow}
+              onSaveNickname={handleSaveNickname}
+              onUploadAvatar={handleUploadAvatar}
+              onRemoveAvatar={handleRemoveAvatar}
             />
           )}
         </main>

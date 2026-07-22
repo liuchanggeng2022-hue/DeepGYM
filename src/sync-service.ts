@@ -18,10 +18,18 @@ const INITIAL_STATE: SyncState = {
 };
 
 function syncError(reason: unknown) {
-  const message = reason instanceof Error ? reason.message : String(reason || "");
+  const details = reason && typeof reason === "object"
+    ? reason as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown }
+    : null;
+  const message = reason instanceof Error
+    ? reason.message
+    : [details?.message, details?.details, details?.hint, details?.code ? `错误代码 ${details.code}` : null]
+        .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+        .join(" · ") || String(reason || "");
   if (message.toLowerCase().includes("failed to fetch") || !navigator.onLine) {
     return "当前离线，训练已安全保存在本机。";
   }
+  if (message === "[object Object]") return "云端同步失败，请在“我的”中点击“立即同步”查看最新状态。";
   return message || "云端同步失败，本机数据不会丢失。";
 }
 

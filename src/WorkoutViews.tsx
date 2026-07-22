@@ -232,10 +232,14 @@ interface HistoryProps {
   sessions: WorkoutSession[];
   exerciseLookup: ExerciseLookup;
   error: string;
+  busy: boolean;
   onBrowse: () => void;
+  onDeleteSession: (sessionId: string) => void;
 }
 
-export function WorkoutHistoryView({ sessions, exerciseLookup, error, onBrowse }: HistoryProps) {
+export function WorkoutHistoryView({ sessions, exerciseLookup, error, busy, onBrowse, onDeleteSession }: HistoryProps) {
+  const [pendingDeletionId, setPendingDeletionId] = useState<string | null>(null);
+
   return (
     <div className="page-wrap workout-page">
       <header className="subpage-header">
@@ -257,7 +261,18 @@ export function WorkoutHistoryView({ sessions, exerciseLookup, error, onBrowse }
                 <span className="history-expand" aria-hidden="true">⌄</span>
               </summary>
               <div className="history-detail">
-                <p>训练时长：{formatDuration(summary.durationMinutes)}</p>
+                <div className="history-detail-toolbar">
+                  <p>训练时长：{formatDuration(summary.durationMinutes)}</p>
+                  {pendingDeletionId === session.id ? (
+                    <div className="history-delete-confirm" role="group" aria-label="确认删除训练记录">
+                      <span>删除后会同步到其他设备</span>
+                      <button className="danger-confirm-button" type="button" disabled={busy} onClick={() => { setPendingDeletionId(null); onDeleteSession(session.id); }}>确认删除</button>
+                      <button className="cancel-remove-button" type="button" disabled={busy} onClick={() => setPendingDeletionId(null)}>取消</button>
+                    </div>
+                  ) : (
+                    <button className="danger-text-button" type="button" disabled={busy} onClick={() => setPendingDeletionId(session.id)}>删除这条训练</button>
+                  )}
+                </div>
                 {session.exercises.map((workoutExercise) => {
                   const exercise = exerciseLookup.get(workoutExercise.exerciseId);
                   const completedSets = workoutExercise.sets.filter((set) => set.completed && set.reps && set.reps > 0);

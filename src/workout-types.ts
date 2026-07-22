@@ -1,4 +1,4 @@
-export type AppView = "library" | "today" | "history";
+export type AppView = "library" | "today" | "history" | "account";
 export type WorkoutSessionStatus = "active" | "completed" | "archived";
 export type SyncStatus = "idle" | "syncing" | "offline" | "error" | "conflict";
 export type SyncEntityType = "session" | "exercise" | "set";
@@ -121,6 +121,7 @@ export interface WorkoutRepository {
   deleteSet(setId: string): Promise<void>;
   saveSets(sets: WorkoutSet[]): Promise<void>;
   completeSession(sessionId: string, endedAt: string): Promise<void>;
+  deleteSession(sessionId: string): Promise<void>;
   listHistory(limit?: number): Promise<WorkoutSession[]>;
   getSyncBatch(): Promise<SyncBatch>;
   markSynced(entityType: SyncEntityType, records: Array<{ id: string; client_updated_at: string }>): Promise<void>;

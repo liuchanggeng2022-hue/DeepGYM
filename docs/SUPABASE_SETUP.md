@@ -1,6 +1,6 @@
 # DeepGYM Supabase 配置说明
 
-本文件记录 Dashboard 必须与仓库保持一致的配置。DeepGYM 托管项目已于 2026-07-21 在 Singapore 区域创建，数据库迁移、RLS、邮箱登录安全参数、删除账号函数、专用 SMTP 和邮件验证码模板均已配置。当前待完成项是真实邮箱端到端联调。
+本文件记录 Dashboard 必须与仓库保持一致的配置。DeepGYM 托管项目已于 2026-07-21 在 Singapore 区域创建，数据库迁移、RLS、邮箱登录安全参数、删除账号函数、专用 SMTP 和邮件验证码模板均已配置。2026-07-22 已增加用户昵称和私有头像存储。当前待完成项是真实邮箱端到端联调。
 
 ## 1. 创建项目与本机环境
 
@@ -22,6 +22,14 @@ supabase/migrations/202607210001_auth_sync.sql
 ```
 
 执行后确认 `workout_sessions`、`workout_exercises`、`workout_sets` 均已启用 RLS，且 authenticated 角色只能以 `auth.uid() = user_id` 读写。不要为了调试关闭 RLS。
+
+随后执行个人资料迁移：
+
+```text
+supabase/migrations/202607220001_profiles_avatars.sql
+```
+
+该迁移会创建启用 RLS 的 `profiles` 表、自动为新旧 Auth 用户补齐资料，并创建非公开的 `avatars` Storage bucket。头像限制为 JPG、PNG 或 WebP，最大 5 MB；每个用户只能访问以自己 `auth.uid()` 命名的目录。应用只生成有时效的签名地址，不将头像目录改为公开访问。
 
 ## 3. 专用 SMTP
 
@@ -69,7 +77,8 @@ supabase/functions/delete-account/index.ts
 6. 用第二个账号验证看不到第一个账号的数据；
 7. 在第二台设备登录同一账号，验证历史恢复和软删除传播；
 8. 验证未同步时退出会被阻止，同步后退出会清除当前账号本机副本；
-9. 用测试账号完成永久删除，确认 Auth 用户、云端训练数据、本机数据和系统凭据全部消失。
+9. 修改昵称并上传头像，确认另一账号不能读取该 `profiles` 记录或私有头像；
+10. 用测试账号完成永久删除，确认 Auth 用户、云端训练数据、本机数据和系统凭据全部消失。
 
 ## 7. 发布前仍需完成
 

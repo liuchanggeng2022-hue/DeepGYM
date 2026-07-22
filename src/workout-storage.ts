@@ -50,6 +50,15 @@ function now() {
   return new Date().toISOString();
 }
 
+function canonicalTimestamp(value: string) {
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? value : timestamp.toISOString();
+}
+
+function canonicalOptionalTimestamp(value: string | null) {
+  return value ? canonicalTimestamp(value) : null;
+}
+
 function createId(prefix: string) {
   const random = typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
@@ -403,6 +412,17 @@ class SqliteWorkoutRepository implements WorkoutRepository {
     );
   }
 
+  async deleteSession(sessionId: string) {
+    const timestamp = now();
+    await this.db.execute(
+      `UPDATE workout_session
+       SET deleted_at = $1, updated_at = $1
+       WHERE id = $2 AND owner_user_id = $3
+         AND status IN ('completed', 'archived') AND deleted_at IS NULL`,
+      [timestamp, sessionId, this.userId],
+    );
+  }
+
   async listHistory(limit = 100) {
     const rows = await this.db.select<SessionRow[]>(`
       WITH recent_sessions AS (
@@ -455,7 +475,8 @@ class SqliteWorkoutRepository implements WorkoutRepository {
          WHERE owner_user_id = $1 AND entity_type = $2 AND entity_id = $3
            AND EXISTS (
              SELECT 1 FROM ${table}
-             WHERE id = $3 AND owner_user_id = $1 AND updated_at = $4
+             WHERE id = $3 AND owner_user_id = $1
+               AND ABS(julianday(updated_at) - julianday($4)) < 0.00000001
            )`,
         [this.userId, entityType, record.id, record.client_updated_at],
       );
@@ -480,6 +501,7 @@ class SqliteWorkoutRepository implements WorkoutRepository {
 
   async applyRemote(batch: SyncBatch) {
     for (const session of batch.sessions) {
+      const clientUpdatedAt = canonicalTimestamp(session.client_updated_at);
       await this.db.execute(
         `INSERT INTO workout_session
           (id, started_at, ended_at, owner_user_id, status, device_id, updated_at, deleted_at)
@@ -490,11 +512,21 @@ class SqliteWorkoutRepository implements WorkoutRepository {
            deleted_at = excluded.deleted_at
          WHERE excluded.owner_user_id = workout_session.owner_user_id
            AND excluded.updated_at >= workout_session.updated_at`,
-        [session.id, session.started_at, session.ended_at, this.userId, session.status, session.device_id, session.client_updated_at, session.deleted_at],
+        [
+          session.id,
+          canonicalTimestamp(session.started_at),
+          canonicalOptionalTimestamp(session.ended_at),
+          this.userId,
+          session.status,
+          session.device_id,
+          clientUpdatedAt,
+          canonicalOptionalTimestamp(session.deleted_at),
+        ],
       );
-      await this.finishRemoteApply("session", session.id, session.client_updated_at, "workout_session");
+      await this.finishRemoteApply("session", session.id, clientUpdatedAt, "workout_session");
     }
     for (const exercise of batch.exercises) {
+      const clientUpdatedAt = canonicalTimestamp(exercise.client_updated_at);
       await this.db.execute(
         `INSERT INTO workout_exercise
           (id, session_id, exercise_id, position, owner_user_id, updated_at, deleted_at)
@@ -504,11 +536,20 @@ class SqliteWorkoutRepository implements WorkoutRepository {
            owner_user_id = excluded.owner_user_id, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
          WHERE excluded.owner_user_id = workout_exercise.owner_user_id
            AND excluded.updated_at >= workout_exercise.updated_at`,
-        [exercise.id, exercise.session_id, exercise.exercise_id, exercise.position, this.userId, exercise.client_updated_at, exercise.deleted_at],
+        [
+          exercise.id,
+          exercise.session_id,
+          exercise.exercise_id,
+          exercise.position,
+          this.userId,
+          clientUpdatedAt,
+          canonicalOptionalTimestamp(exercise.deleted_at),
+        ],
       );
-      await this.finishRemoteApply("exercise", exercise.id, exercise.client_updated_at, "workout_exercise");
+      await this.finishRemoteApply("exercise", exercise.id, clientUpdatedAt, "workout_exercise");
     }
     for (const set of batch.sets) {
+      const clientUpdatedAt = canonicalTimestamp(set.client_updated_at);
       await this.db.execute(
         `INSERT INTO workout_set
           (id, workout_exercise_id, position, weight_kg, reps, completed, completed_at, owner_user_id, updated_at, deleted_at)
@@ -520,9 +561,20 @@ class SqliteWorkoutRepository implements WorkoutRepository {
            updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
          WHERE excluded.owner_user_id = workout_set.owner_user_id
            AND excluded.updated_at >= workout_set.updated_at`,
-        [set.id, set.workout_exercise_id, set.position, set.weight_kg, set.reps, set.completed ? 1 : 0, set.completed_at, this.userId, set.client_updated_at, set.deleted_at],
+        [
+          set.id,
+          set.workout_exercise_id,
+          set.position,
+          set.weight_kg,
+          set.reps,
+          set.completed ? 1 : 0,
+          canonicalOptionalTimestamp(set.completed_at),
+          this.userId,
+          clientUpdatedAt,
+          canonicalOptionalTimestamp(set.deleted_at),
+        ],
       );
-      await this.finishRemoteApply("set", set.id, set.client_updated_at, "workout_set");
+      await this.finishRemoteApply("set", set.id, clientUpdatedAt, "workout_set");
     }
   }
 
@@ -775,6 +827,18 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
     session.endedAt = endedAt;
     session.status = "completed";
     session.updatedAt = endedAt;
+    this.write(store);
+  }
+
+  async deleteSession(sessionId: string) {
+    const store = this.read();
+    const session = store.sessions.find((item) => item.id === sessionId
+      && (item.status === "completed" || item.status === "archived")
+      && !item.deletedAt);
+    if (!session) return;
+    const timestamp = now();
+    session.deletedAt = timestamp;
+    session.updatedAt = timestamp;
     this.write(store);
   }
 

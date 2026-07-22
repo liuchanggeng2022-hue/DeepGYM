@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import appIcon from "../assets/deepgym-icon.png";
 import { friendlyAuthError } from "./auth-service";
 import type { AuthService, AuthUser } from "./auth-types";
+import type { UserProfile } from "./profile-types";
 import type { SyncState, WorkoutSession } from "./workout-types";
 
 type AuthMode = "login" | "register" | "verify-signup" | "forgot" | "verify-recovery";
@@ -217,12 +218,14 @@ function syncLabel(state: SyncState) {
 
 export function AccountMenu({
   user,
+  profile,
   syncState,
   busy,
   onLogout,
   onDelete,
 }: {
   user: AuthUser;
+  profile: UserProfile | null;
   syncState: SyncState;
   busy: boolean;
   onLogout: () => Promise<void>;
@@ -233,7 +236,11 @@ export function AccountMenu({
   const [password, setPassword] = useState("");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState("");
-  const initials = (user.email[0] || "D").toUpperCase();
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const displayName = profile?.nickname || user.email;
+  const initials = (displayName[0] || "D").toUpperCase();
+
+  useEffect(() => setAvatarFailed(false), [profile?.avatarUrl]);
 
   const deleteAccount = async () => {
     if (!password || phrase !== "删除我的账号") return;
@@ -257,9 +264,14 @@ export function AccountMenu({
 
   return (
     <div className="account-menu-wrap">
-      <button className="avatar" type="button" aria-label="打开账号菜单" aria-expanded={open} onClick={() => setOpen((value) => !value)}>{initials}</button>
+      <button className="avatar" type="button" aria-label="打开账号菜单" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        {profile?.avatarUrl && !avatarFailed
+          ? <img src={profile.avatarUrl} alt="" onError={() => setAvatarFailed(true)} />
+          : initials}
+      </button>
       {open && (
         <div className="account-popover">
+          {profile?.nickname && <span className="account-display-name">{profile.nickname}</span>}
           <span className="account-email">{user.email}</span>
           <span className={`account-sync-state ${syncState.status}`}><i></i>{syncLabel(syncState)}</span>
           <button type="button" disabled={busy} onClick={() => void logout()}>退出登录</button>
@@ -279,6 +291,216 @@ export function AccountMenu({
             {error && <div className="auth-error" role="alert">{error}</div>}
             <div className="account-modal-actions">
               <button type="button" onClick={() => { setDeleting(false); setError(""); }}>取消</button>
+              <button className="danger-confirm-button" type="button" disabled={busy || !password || phrase !== "删除我的账号"} onClick={() => void deleteAccount()}>{busy ? "正在删除…" : "永久删除"}</button>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function AccountSettingsView({
+  user,
+  profile,
+  syncState,
+  busy,
+  profileBusy,
+  profileError,
+  onLogout,
+  onDelete,
+  onSync,
+  onSaveNickname,
+  onUploadAvatar,
+  onRemoveAvatar,
+}: {
+  user: AuthUser;
+  profile: UserProfile | null;
+  syncState: SyncState;
+  busy: boolean;
+  profileBusy: boolean;
+  profileError: string;
+  onLogout: () => Promise<void>;
+  onDelete: (password: string) => Promise<void>;
+  onSync: () => Promise<void>;
+  onSaveNickname: (nickname: string) => Promise<void>;
+  onUploadAvatar: (file: File) => Promise<void>;
+  onRemoveAvatar: () => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [password, setPassword] = useState("");
+  const [phrase, setPhrase] = useState("");
+  const [error, setError] = useState("");
+  const [nickname, setNickname] = useState(profile?.nickname || "");
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const displayName = profile?.nickname || user.email;
+  const initials = (displayName[0] || "D").toUpperCase();
+  const lastSynced = syncState.lastSyncedAt
+    ? new Intl.DateTimeFormat("zh-CN", {
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(syncState.lastSyncedAt))
+    : "等待首次同步";
+
+  useEffect(() => setNickname(profile?.nickname || ""), [profile?.nickname]);
+  useEffect(() => setAvatarFailed(false), [profile?.avatarUrl]);
+
+  const logout = async () => {
+    setError("");
+    try {
+      await onLogout();
+    } catch (reason) {
+      setError(friendlyAuthError(reason));
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (!password || phrase !== "删除我的账号") return;
+    setError("");
+    try {
+      await onDelete(password);
+    } catch (reason) {
+      setError(friendlyAuthError(reason));
+    }
+  };
+
+  const syncNow = async () => {
+    setError("");
+    try {
+      await onSync();
+    } catch (reason) {
+      setError(friendlyAuthError(reason));
+    }
+  };
+
+  const saveNickname = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    try {
+      await onSaveNickname(nickname);
+    } catch (reason) {
+      setError(friendlyAuthError(reason));
+    }
+  };
+
+  const uploadAvatar = async (file: File | undefined) => {
+    if (!file) return;
+    setError("");
+    try {
+      await onUploadAvatar(file);
+    } catch (reason) {
+      setError(friendlyAuthError(reason));
+    }
+  };
+
+  const removeAvatar = async () => {
+    setError("");
+    try {
+      await onRemoveAvatar();
+    } catch (reason) {
+      setError(friendlyAuthError(reason));
+    }
+  };
+
+  return (
+    <div className="page-wrap account-settings-page">
+      <header className="subpage-header account-settings-header">
+        <div>
+          <p className="eyebrow">MY DEEPGYM / 我的</p>
+          <h1>登录与账号设置</h1>
+          <p>管理登录信息、查看训练同步状态，或安全退出当前账号。</p>
+        </div>
+        <div className="account-identity-mark" aria-hidden="true">
+          {profile?.avatarUrl && !avatarFailed
+            ? <img src={profile.avatarUrl} alt="" onError={() => setAvatarFailed(true)} />
+            : initials}
+        </div>
+      </header>
+
+      {(error || profileError) && <div className="workout-error" role="alert">{error || profileError}</div>}
+
+      <div className="account-settings-grid">
+        <section className="account-settings-card account-profile-card">
+          <div className="account-card-heading">
+            <span className="account-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" /><path d="M4 21c.7-4.2 3.4-6 8-6s7.3 1.8 8 6" /></svg>
+            </span>
+            <div><p>个人资料</p><h2>昵称与头像</h2></div>
+          </div>
+          <div className="profile-avatar-editor">
+            <div className="profile-avatar-preview" aria-label="当前头像">
+              {profile?.avatarUrl && !avatarFailed
+                ? <img src={profile.avatarUrl} alt="当前用户头像" onError={() => setAvatarFailed(true)} />
+                : <span>{initials}</span>}
+            </div>
+            <div className="profile-avatar-actions">
+              <label className={`profile-upload-button${profileBusy ? " disabled" : ""}`}>
+                <span>{profileBusy ? "正在处理…" : profile?.avatarPath ? "更换头像" : "上传头像"}</span>
+                <input type="file" accept="image/jpeg,image/png,image/webp" disabled={profileBusy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void uploadAvatar(file); }} />
+              </label>
+              {profile?.avatarPath && <button type="button" disabled={profileBusy} onClick={() => void removeAvatar()}>移除头像</button>}
+              <p>支持 JPG、PNG、WebP，最大 5 MB。头像存放在你的私有云端目录。</p>
+            </div>
+          </div>
+          <form className="profile-nickname-form" onSubmit={(event) => void saveNickname(event)}>
+            <label htmlFor="profileNickname"><span>用户昵称</span><input id="profileNickname" type="text" autoComplete="nickname" maxLength={30} value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="输入你的昵称" required /></label>
+            <button className="secondary-button" type="submit" disabled={profileBusy || !nickname.trim() || nickname.trim() === (profile?.nickname || "")}>{profileBusy ? "正在保存…" : "保存昵称"}</button>
+          </form>
+          <dl className="account-detail-list">
+            <div><dt>邮箱</dt><dd>{user.email}</dd></div>
+            <div><dt>登录方式</dt><dd>邮箱与密码</dd></div>
+            <div><dt>会话保护</dt><dd>系统凭据管理器</dd></div>
+          </dl>
+        </section>
+
+        <section className="account-settings-card">
+          <div className="account-card-heading">
+            <span className="account-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M7 7h10l-2-2M17 17H7l2 2M19 7a7 7 0 0 1 1 4M5 17a7 7 0 0 1-1-4" /></svg>
+            </span>
+            <div><p>训练数据</p><h2>云端同步</h2></div>
+          </div>
+          <div className={`account-sync-summary ${syncState.status}`}>
+            <span className="status-dot" aria-hidden="true"></span>
+            <strong>{syncLabel(syncState)}</strong>
+          </div>
+          <dl className="account-detail-list compact">
+            <div><dt>待同步记录</dt><dd>{syncState.pendingCount} 项</dd></div>
+            <div><dt>上次同步</dt><dd>{lastSynced}</dd></div>
+          </dl>
+          <p className="account-settings-note">训练记录始终先保存到本机 SQLite；联网后会自动同步到当前账号。</p>
+          {syncState.error && <div className="account-sync-error" role="alert">{syncState.error}</div>}
+          <button className="secondary-button account-sync-button" type="button" disabled={busy || syncState.status === "syncing"} onClick={() => void syncNow()}>{syncState.status === "syncing" ? "正在同步…" : "立即同步"}</button>
+        </section>
+
+        <section className="account-settings-card account-actions-card">
+          <div className="account-card-heading">
+            <span className="account-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10" /></svg>
+            </span>
+            <div><p>账号操作</p><h2>登录管理</h2></div>
+          </div>
+          <p>退出前会先完成同步并清除当前账号在这台设备上的副本与登录凭据。</p>
+          <div className="account-settings-actions">
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => void logout()}>{busy ? "正在处理…" : "退出登录"}</button>
+            <button className="account-delete-button" type="button" disabled={busy} onClick={() => { setError(""); setDeleting(true); }}>删除账号和全部数据</button>
+          </div>
+        </section>
+      </div>
+
+      {deleting && (
+        <div className="account-modal-backdrop" role="presentation">
+          <section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="settingsDeleteAccountTitle">
+            <p className="eyebrow">PERMANENT ACTION</p>
+            <h2 id="settingsDeleteAccountTitle">永久删除账号？</h2>
+            <p>云端训练记录、本机副本和登录凭据都会删除，无法恢复。</p>
+            <label><span>当前密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+            <label><span>输入“删除我的账号”确认</span><input type="text" value={phrase} onChange={(event) => setPhrase(event.target.value)} /></label>
+            {error && <div className="auth-error" role="alert">{error}</div>}
+            <div className="account-modal-actions">
+              <button type="button" onClick={() => { setDeleting(false); setError(""); setPassword(""); setPhrase(""); }}>取消</button>
               <button className="danger-confirm-button" type="button" disabled={busy || !password || phrase !== "删除我的账号"} onClick={() => void deleteAccount()}>{busy ? "正在删除…" : "永久删除"}</button>
             </div>
           </section>
