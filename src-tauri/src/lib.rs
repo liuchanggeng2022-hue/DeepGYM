@@ -42,6 +42,24 @@ pub fn run() {
       sql: include_str!("../migrations/0002_account_sync.sql"),
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 3,
+      description: "add_training_hub",
+      sql: include_str!("../migrations/0003_training_hub.sql"),
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 4,
+      description: "add_companion_mvp",
+      sql: include_str!("../migrations/0004_companions.sql"),
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 5,
+      description: "repair_sync_triggers",
+      sql: include_str!("../migrations/0005_repair_sync_triggers.sql"),
+      kind: MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()
