@@ -15,9 +15,14 @@ import {
 } from "./exercise-data";
 import type { Exercise, IndexedExercise } from "./types";
 import { TodayWorkoutView, WorkoutHistoryView } from "./WorkoutViews";
+import { AccountMenu, AccountSettingsView, ActiveWorkoutConflict } from "./AuthViews";
+import { createProfileService } from "./profile-service";
+import { SyncService } from "./sync-service";
 import { createWorkoutRepository } from "./workout-storage";
 import { summarizeDay } from "./workout-summary";
-import type { AppView, WorkoutRepository, WorkoutSession, WorkoutSet } from "./workout-types";
+import type { AuthService, AuthUser } from "./auth-types";
+import type { UserProfile } from "./profile-types";
+import type { AppView, SyncState, WorkoutRepository, WorkoutSession, WorkoutSet } from "./workout-types";
 
 const DATA_URL = "/data/exercises.json";
 
@@ -204,7 +209,22 @@ function ExerciseDialog({
   );
 }
 
-export default function App() {
+const INITIAL_SYNC_STATE: SyncState = {
+  status: "idle",
+  pendingCount: 0,
+  lastSyncedAt: null,
+  conflicts: [],
+};
+
+export default function App({
+  authUser,
+  authService,
+  authOffline,
+}: {
+  authUser: AuthUser;
+  authService: AuthService;
+  authOffline: boolean;
+}) {
   const [exercises, setExercises] = useState<IndexedExercise[]>([]);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
@@ -221,11 +241,24 @@ export default function App() {
   const [workoutBusy, setWorkoutBusy] = useState(false);
   const [workoutError, setWorkoutError] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [syncState, setSyncState] = useState<SyncState>(() => ({
+    ...INITIAL_SYNC_STATE,
+    status: authOffline ? "offline" : "idle",
+  }));
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState("");
   const activeSessionRef = useRef<WorkoutSession | null>(null);
+  const syncServiceRef = useRef<SyncService | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyDraftRef = useRef(false);
   const saveGenerationRef = useRef(0);
   const runningInTauri = "__TAURI_INTERNALS__" in window;
+  const profileService = useMemo(
+    () => createProfileService(authService.getClient(), authUser.id),
+    [authService, authUser.id],
+  );
 
   const setActiveWorkout = (session: WorkoutSession | null) => {
     activeSessionRef.current = session;
@@ -254,10 +287,65 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    setProfileBusy(true);
+    setProfileError("");
+    void profileService.load()
+      .then((value) => {
+        if (active) setProfile(value);
+      })
+      .catch((reason) => {
+        if (!active) return;
+        setProfileError(reason instanceof Error ? reason.message : "个人资料加载失败。");
+      })
+      .finally(() => {
+        if (active) setProfileBusy(false);
+      });
+    return () => { active = false; };
+  }, [profileService]);
+
+  useEffect(() => {
+    let active = true;
+    let stopSync: (() => void) | null = null;
     const initializeWorkoutStorage = async () => {
       setWorkoutLoading(true);
       try {
-        const repository = await createWorkoutRepository();
+        const repository = await createWorkoutRepository(authUser.id);
+        let syncService: SyncService | null = null;
+        if (repository.mode === "sqlite" && authService.configured) {
+          syncService = new SyncService(repository, authService.getClient(), authUser.id);
+          syncServiceRef.current = syncService;
+          let previousStatus: SyncState["status"] | null = null;
+          const unsubscribe = syncService.subscribe((state) => {
+            if (!active) return;
+            setSyncState(state);
+            if (previousStatus === "syncing" && (state.status === "idle" || state.status === "conflict") && !dirtyDraftRef.current) {
+              void Promise.all([repository.getActiveSession(), repository.listHistory()]).then(([session, history]) => {
+                if (!active || dirtyDraftRef.current) return;
+                setActiveWorkout(session);
+                setWorkoutHistory(history);
+              });
+            }
+            previousStatus = state.status;
+          });
+          stopSync = () => {
+            unsubscribe();
+            syncService?.stop();
+          };
+          await syncService.pullRemoteFirst();
+        }
+
+        await repository.claimLegacyData();
+        if (syncService) await syncService.syncNow();
+        else {
+          const pendingCount = await repository.getPendingCount();
+          setSyncState({
+            status: navigator.onLine ? "idle" : "offline",
+            pendingCount,
+            lastSyncedAt: null,
+            conflicts: [],
+            error: navigator.onLine ? undefined : "当前离线，训练已安全保存在本机。",
+          });
+        }
         const [session, history] = await Promise.all([
           repository.getActiveSession(),
           repository.listHistory(),
@@ -267,6 +355,7 @@ export default function App() {
         setActiveWorkout(session);
         setWorkoutHistory(history);
         setWorkoutError("");
+        syncService?.start();
       } catch (reason) {
         if (!active) return;
         setWorkoutError(reason instanceof Error ? reason.message : "训练记录存储初始化失败。");
@@ -277,9 +366,11 @@ export default function App() {
     void initializeWorkoutStorage();
     return () => {
       active = false;
+      stopSync?.();
+      syncServiceRef.current = null;
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     };
-  }, []);
+  }, [authService, authUser.id]);
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
@@ -346,6 +437,7 @@ export default function App() {
     await workoutRepository.saveSets(sets);
     if (generation === saveGenerationRef.current) dirtyDraftRef.current = false;
     setLastSavedAt(new Date());
+    void syncServiceRef.current?.syncNow();
   };
 
   const scheduleDraftSave = () => {
@@ -393,6 +485,7 @@ export default function App() {
       setActiveWorkout(result.session);
       setSelected(null);
       setView("today");
+      void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "加入今日训练失败。");
     } finally {
@@ -408,6 +501,7 @@ export default function App() {
       await persistDraft();
       await workoutRepository.addSet(workoutExerciseId);
       await refreshActiveWorkout();
+      void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "添加组失败。");
     } finally {
@@ -423,6 +517,7 @@ export default function App() {
       await persistDraft();
       await workoutRepository.deleteSet(setId);
       await refreshActiveWorkout();
+      void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "删除组失败。");
     } finally {
@@ -438,6 +533,7 @@ export default function App() {
       await persistDraft();
       await workoutRepository.removeExercise(workoutExerciseId);
       await refreshActiveWorkout();
+      void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "移除动作失败。");
     } finally {
@@ -457,6 +553,7 @@ export default function App() {
       setWorkoutHistory(history);
       setActiveWorkout(await workoutRepository.getActiveSession());
       setLastSavedAt(new Date());
+      void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "完成训练失败。");
     } finally {
@@ -464,10 +561,148 @@ export default function App() {
     }
   };
 
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      await workoutRepository.deleteSession(sessionId);
+      setWorkoutHistory(await workoutRepository.listHistory());
+      await syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "删除训练记录失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    await persistDraft();
+    if (!navigator.onLine) throw new Error("当前处于离线状态，请联网后再同步。");
+    const service = syncServiceRef.current;
+    if (!service) throw new Error(workoutRepository?.mode === "browser-preview"
+      ? "浏览器预览不会上传数据，请在 DeepGYM 桌面应用中同步。"
+      : "云端同步服务尚未就绪，请稍后再试。");
+    const state = await service.syncNow();
+    if (state.status === "error" || state.status === "offline") {
+      throw new Error(state.error || "云端同步失败，本机数据不会丢失。");
+    }
+  };
+
+  const handleSaveNickname = async (nickname: string) => {
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      setProfile(await profileService.saveNickname(nickname));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "昵称保存失败。";
+      setProfileError(message);
+      throw reason;
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const handleUploadAvatar = async (file: File) => {
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      setProfile(await profileService.uploadAvatar(file));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "头像上传失败。";
+      setProfileError(message);
+      throw reason;
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setProfileBusy(true);
+    setProfileError("");
+    try {
+      setProfile(await profileService.removeAvatar());
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "头像删除失败。";
+      setProfileError(message);
+      throw reason;
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (!workoutRepository) throw new Error("训练记录仍在准备，请稍后再试。");
+    setAccountBusy(true);
+    try {
+      await persistDraft();
+      if (!navigator.onLine) throw new Error("当前处于离线状态。请联网并完成同步后再退出，以免训练记录留在这台设备上。");
+      const syncService = syncServiceRef.current;
+      if (workoutRepository.mode === "sqlite" && !syncService) throw new Error("云端同步尚未就绪，暂时不能退出登录。");
+      const state = syncService ? await syncService.syncNow() : syncState;
+      if (state.status === "error" || state.status === "offline") throw new Error(state.error || "同步失败，暂时不能退出登录。");
+      if (state.conflicts.length > 1) throw new Error("请先选择要继续的进行中训练，再退出登录。");
+      const pendingCount = await workoutRepository.getPendingCount();
+      if (pendingCount > 0) throw new Error(`还有 ${pendingCount} 项记录尚未同步，暂时不能退出登录。`);
+      syncService?.stop();
+      await authService.signOut();
+      await workoutRepository.clearUserData();
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleDeleteAccount = async (password: string) => {
+    if (!workoutRepository) throw new Error("训练记录仍在准备，请稍后再试。");
+    if (!navigator.onLine) throw new Error("删除账号需要联网验证身份，请恢复网络后重试。");
+    setAccountBusy(true);
+    try {
+      syncServiceRef.current?.stop();
+      await authService.deleteAccount(password);
+      await workoutRepository.clearUserData();
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleResolveConflict = async (sessionId: string) => {
+    const service = syncServiceRef.current;
+    if (!service || !workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await service.resolveActiveConflict(sessionId);
+      const [session, history] = await Promise.all([
+        workoutRepository.getActiveSession(),
+        workoutRepository.listHistory(),
+      ]);
+      setActiveWorkout(session);
+      setWorkoutHistory(history);
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "处理训练冲突失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
   const activeExerciseIds = new Set(activeSession?.exercises.map((exercise) => exercise.exerciseId) || []);
-  const topbarStatus = view === "library"
-    ? error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作已就绪`
-    : workoutError ? "训练记录需要处理" : workoutLoading ? "正在打开本地记录…" : workoutRepository?.mode === "sqlite" ? "SQLite 本地记录已就绪" : "浏览器预览记录已就绪";
+  const syncStatusText = syncState.status === "syncing"
+    ? "正在同步云端"
+    : syncState.status === "offline"
+      ? "离线保存"
+      : syncState.status === "error"
+        ? "同步失败"
+        : syncState.status === "conflict"
+          ? "等待处理训练冲突"
+          : syncState.pendingCount > 0
+            ? `${syncState.pendingCount} 项待同步`
+            : workoutRepository?.mode === "browser-preview" ? "浏览器预览不上传" : "云端已同步";
+  const topbarStatus = view === "account"
+    ? "登录与账号设置"
+    : view === "library"
+      ? error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作 · ${syncStatusText}`
+      : workoutError ? "训练记录需要处理" : workoutLoading ? "正在打开本地记录…" : syncStatusText;
 
   return (
     <>
@@ -491,13 +726,17 @@ export default function App() {
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9M12 19V5M19 19v-7" /></svg>
               <span>训练记录</span>{workoutHistory.length > 0 && <span className="nav-badge">{workoutHistory.length}</span>}
             </button>
+            <button className={`nav-item${view === "account" ? " active" : ""}`} type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => setView("account")}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21c.7-4.2 3.4-6 8-6s7.3 1.8 8 6" /></svg>
+              <span>我的</span>
+            </button>
           </nav>
 
           <div className="sidebar-note">
             <span className="status-dot" aria-hidden="true"></span>
             <div>
               <strong>{runningInTauri ? "Tauri 桌面模式" : "浏览器开发预览"}</strong>
-              <p>训练记录保存在本机，动图需要网络。</p>
+              <p>{runningInTauri ? "训练先存本机，联网后自动同步。" : "预览数据只保存在这个浏览器中。"}</p>
             </div>
           </div>
         </aside>
@@ -511,7 +750,14 @@ export default function App() {
               <span className={`status-dot${view === "library" ? error ? " error" : "" : workoutError ? " error" : ""}`} aria-hidden="true"></span>
               <span>{topbarStatus}</span>
             </div>
-            <button className="avatar" type="button" disabled aria-label="个人资料将在后续开放">DG</button>
+            <AccountMenu
+              user={authUser}
+              profile={profile}
+              syncState={syncState}
+              busy={accountBusy || workoutBusy}
+              onLogout={handleLogout}
+              onDelete={handleDeleteAccount}
+            />
           </header>
 
           {view === "library" && <div className="page-wrap" id="exercise-library">
@@ -637,7 +883,26 @@ export default function App() {
               sessions={workoutHistory}
               exerciseLookup={exerciseLookup}
               error={workoutError}
+              busy={workoutBusy}
               onBrowse={() => setView("library")}
+              onDeleteSession={(id) => void handleDeleteSession(id)}
+            />
+          )}
+
+          {view === "account" && (
+            <AccountSettingsView
+              user={authUser}
+              profile={profile}
+              syncState={syncState}
+              busy={accountBusy || workoutBusy}
+              profileBusy={profileBusy}
+              profileError={profileError}
+              onLogout={handleLogout}
+              onDelete={handleDeleteAccount}
+              onSync={handleSyncNow}
+              onSaveNickname={handleSaveNickname}
+              onUploadAvatar={handleUploadAvatar}
+              onRemoveAvatar={handleRemoveAvatar}
             />
           )}
         </main>
@@ -650,6 +915,7 @@ export default function App() {
         added={Boolean(selected && activeExerciseIds.has(selected.id))}
         adding={workoutBusy || workoutLoading}
       />
+      <ActiveWorkoutConflict sessions={syncState.conflicts} onResolve={(id) => void handleResolveConflict(id)} />
     </>
   );
 }

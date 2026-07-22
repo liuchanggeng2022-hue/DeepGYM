@@ -5,3 +5,7 @@ build/
 coverage/
 src-tauri/target/
 *.log
+.env
+.env.local
+.env.*.local
+!.env.example
