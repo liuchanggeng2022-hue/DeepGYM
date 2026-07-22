@@ -1,11 +1,19 @@
 import type Database from "@tauri-apps/plugin-sql";
 import type {
   AddExerciseResult,
+  CloudPlannedExercise,
+  CloudTrainingPlan,
+  CloudTrainingPlanDay,
+  CloudTrainingPlanState,
   CloudWorkoutExercise,
   CloudWorkoutSession,
   CloudWorkoutSet,
   SyncBatch,
   SyncEntityType,
+  TrainingPlan,
+  TrainingPlanDay,
+  TrainingPlanInput,
+  TrainingPlanState,
   WorkoutExercise,
   WorkoutRepository,
   WorkoutSession,
@@ -25,11 +33,17 @@ interface SessionRow {
   ended_at: string | null;
   status: WorkoutSessionStatus;
   device_id: string | null;
+  source_plan_day_id: string | null;
+  companion_instance_id: string | null;
+  active_duration_seconds: number;
+  end_reason: WorkoutSession["endReason"];
   session_updated_at: string;
   session_deleted_at: string | null;
   workout_exercise_id: string | null;
   exercise_id: string | null;
   exercise_position: number | null;
+  target_reps_min: number | null;
+  target_reps_max: number | null;
   exercise_updated_at: string | null;
   exercise_deleted_at: string | null;
   set_id: string | null;
@@ -44,6 +58,30 @@ interface SessionRow {
 
 interface BrowserStore {
   sessions: WorkoutSession[];
+  plans: TrainingPlan[];
+  planState: TrainingPlanState;
+}
+
+interface PlanRow {
+  plan_id: string;
+  owner_user_id: string;
+  plan_name: string;
+  plan_updated_at: string;
+  plan_deleted_at: string | null;
+  day_id: string | null;
+  weekday: number | null;
+  day_title: string | null;
+  day_position: number | null;
+  day_updated_at: string | null;
+  day_deleted_at: string | null;
+  planned_exercise_id: string | null;
+  planned_exercise_source_id: string | null;
+  planned_exercise_position: number | null;
+  target_sets: number | null;
+  target_reps_min: number | null;
+  target_reps_max: number | null;
+  planned_exercise_updated_at: string | null;
+  planned_exercise_deleted_at: string | null;
 }
 
 function now() {
@@ -87,6 +125,60 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function emptyPlanState(): TrainingPlanState {
+  return { activePlanId: null, updatedAt: now() };
+}
+
+function hydratePlans(rows: PlanRow[]) {
+  const plans = new Map<string, TrainingPlan>();
+  const days = new Map<string, TrainingPlanDay>();
+  for (const row of rows) {
+    let plan = plans.get(row.plan_id);
+    if (!plan) {
+      plan = {
+        id: row.plan_id,
+        ownerUserId: row.owner_user_id,
+        name: row.plan_name,
+        updatedAt: row.plan_updated_at,
+        deletedAt: row.plan_deleted_at,
+        days: [],
+      };
+      plans.set(row.plan_id, plan);
+    }
+    if (!row.day_id || row.day_deleted_at || row.weekday === null || !row.day_title) continue;
+    let day = days.get(row.day_id);
+    if (!day) {
+      day = {
+        id: row.day_id,
+        weekday: row.weekday,
+        title: row.day_title,
+        position: row.day_position || 0,
+        updatedAt: row.day_updated_at || row.plan_updated_at,
+        deletedAt: null,
+        exercises: [],
+      };
+      days.set(row.day_id, day);
+      plan.days.push(day);
+    }
+    if (!row.planned_exercise_id || row.planned_exercise_deleted_at || !row.planned_exercise_source_id) continue;
+    day.exercises.push({
+      id: row.planned_exercise_id,
+      exerciseId: row.planned_exercise_source_id,
+      position: row.planned_exercise_position || 0,
+      targetSets: row.target_sets || 1,
+      targetRepsMin: row.target_reps_min || 1,
+      targetRepsMax: row.target_reps_max || 1,
+      updatedAt: row.planned_exercise_updated_at || day.updatedAt,
+      deletedAt: null,
+    });
+  }
+  for (const plan of plans.values()) {
+    plan.days.sort((a, b) => a.position - b.position);
+    for (const day of plan.days) day.exercises.sort((a, b) => a.position - b.position);
+  }
+  return [...plans.values()];
+}
+
 function hydrateSessions(rows: SessionRow[]) {
   const sessions = new Map<string, WorkoutSession>();
   const exerciseMaps = new Map<string, Map<string, WorkoutExercise>>();
@@ -101,6 +193,10 @@ function hydrateSessions(rows: SessionRow[]) {
         endedAt: row.ended_at,
         status: row.status,
         deviceId: row.device_id,
+        sourcePlanDayId: row.source_plan_day_id,
+        companionInstanceId: row.companion_instance_id,
+        activeDurationSeconds: row.active_duration_seconds || 0,
+        endReason: row.end_reason,
         updatedAt: row.session_updated_at,
         deletedAt: row.session_deleted_at,
         exercises: [],
@@ -117,6 +213,8 @@ function hydrateSessions(rows: SessionRow[]) {
         id: row.workout_exercise_id,
         exerciseId: row.exercise_id,
         position: row.exercise_position || 0,
+        targetRepsMin: row.target_reps_min,
+        targetRepsMax: row.target_reps_max,
         updatedAt: row.exercise_updated_at || row.session_updated_at,
         deletedAt: null,
         sets: [],
@@ -155,11 +253,17 @@ const SESSION_SELECT = `
     s.ended_at,
     s.status,
     s.device_id,
+    s.source_plan_day_id,
+    s.companion_instance_id,
+    s.active_duration_seconds,
+    s.end_reason,
     s.updated_at AS session_updated_at,
     s.deleted_at AS session_deleted_at,
     we.id AS workout_exercise_id,
     we.exercise_id,
     we.position AS exercise_position,
+    we.target_reps_min,
+    we.target_reps_max,
     we.updated_at AS exercise_updated_at,
     we.deleted_at AS exercise_deleted_at,
     ws.id AS set_id,
@@ -174,6 +278,58 @@ const SESSION_SELECT = `
   LEFT JOIN workout_exercise we ON we.session_id = s.id AND we.deleted_at IS NULL
   LEFT JOIN workout_set ws ON ws.workout_exercise_id = we.id AND ws.deleted_at IS NULL
 `;
+
+const PLAN_SELECT = `
+  SELECT
+    p.id AS plan_id,
+    p.owner_user_id,
+    p.name AS plan_name,
+    p.updated_at AS plan_updated_at,
+    p.deleted_at AS plan_deleted_at,
+    d.id AS day_id,
+    d.weekday,
+    d.title AS day_title,
+    d.position AS day_position,
+    d.updated_at AS day_updated_at,
+    d.deleted_at AS day_deleted_at,
+    pe.id AS planned_exercise_id,
+    pe.exercise_id AS planned_exercise_source_id,
+    pe.position AS planned_exercise_position,
+    pe.target_sets,
+    pe.target_reps_min,
+    pe.target_reps_max,
+    pe.updated_at AS planned_exercise_updated_at,
+    pe.deleted_at AS planned_exercise_deleted_at
+  FROM training_plan p
+  LEFT JOIN training_plan_day d ON d.plan_id = p.id AND d.deleted_at IS NULL
+  LEFT JOIN training_plan_exercise pe ON pe.plan_day_id = d.id AND pe.deleted_at IS NULL
+`;
+
+function validatePlanInput(input: TrainingPlanInput) {
+  const name = input.name.trim();
+  if (!name || name.length > 50) throw new Error("计划名称需要填写，且不能超过 50 个字符。");
+  if (input.days.length < 1) throw new Error("请至少选择一个训练日。");
+  const weekdays = new Set<number>();
+  for (const day of input.days) {
+    if (!Number.isInteger(day.weekday) || day.weekday < 1 || day.weekday > 7 || weekdays.has(day.weekday)) {
+      throw new Error("每个星期只能安排一个训练日。");
+    }
+    weekdays.add(day.weekday);
+    if (!day.title.trim() || day.title.trim().length > 30) throw new Error("训练日名称需要填写，且不能超过 30 个字符。");
+    if (day.exercises.length < 1) throw new Error(`请为“${day.title.trim()}”至少添加一个动作。`);
+    const exerciseIds = new Set<string>();
+    for (const exercise of day.exercises) {
+      if (!exercise.exerciseId || exerciseIds.has(exercise.exerciseId)) throw new Error("同一训练日不能重复添加动作。");
+      exerciseIds.add(exercise.exerciseId);
+      if (!Number.isInteger(exercise.targetSets) || exercise.targetSets < 1 || exercise.targetSets > 20) throw new Error("目标组数需要在 1–20 之间。");
+      if (!Number.isInteger(exercise.targetRepsMin) || !Number.isInteger(exercise.targetRepsMax)
+        || exercise.targetRepsMin < 1 || exercise.targetRepsMax > 100 || exercise.targetRepsMin > exercise.targetRepsMax) {
+        throw new Error("目标次数需要在 1–100 之间，且下限不能大于上限。");
+      }
+    }
+  }
+  return name;
+}
 
 async function pendingEntry(db: Database, userId: string, entityType: SyncEntityType, entityId: string) {
   const rows = await db.select<Array<{ count: number }>>(
@@ -245,6 +401,10 @@ class SqliteWorkoutRepository implements WorkoutRepository {
         endedAt: null,
         status: "active",
         deviceId: this.deviceId,
+        sourcePlanDayId: null,
+        companionInstanceId: null,
+        activeDurationSeconds: 0,
+        endReason: null,
         updatedAt: timestamp,
         deletedAt: null,
         exercises: [],
@@ -393,7 +553,23 @@ class SqliteWorkoutRepository implements WorkoutRepository {
     for (const sessionId of touchedSessions) await this.touchSession(sessionId, timestamp);
   }
 
-  async completeSession(sessionId: string, endedAt: string) {
+  async attachCompanion(sessionId: string, companionId: string) {
+    const timestamp = now();
+    await this.db.execute(
+      `UPDATE workout_session SET companion_instance_id = COALESCE(companion_instance_id, $1), updated_at = $2
+       WHERE id = $3 AND owner_user_id = $4 AND status = 'active' AND deleted_at IS NULL`,
+      [companionId, timestamp, sessionId, this.userId],
+    );
+    const session = await this.getActiveSession();
+    if (!session || session.id !== sessionId) throw new Error("没有找到正在进行的训练。");
+    return session;
+  }
+
+  async completeSession(sessionId: string, endedAt: string, options: {
+    endReason?: WorkoutSession["endReason"] extends infer T ? Exclude<T, null> : never;
+    activeDurationSeconds?: number;
+    companionInstanceId?: string | null;
+  } = {}) {
     const counts = await this.db.select<Array<{ count: number }>>(
       `SELECT COUNT(*) AS count
        FROM workout_set ws
@@ -406,9 +582,11 @@ class SqliteWorkoutRepository implements WorkoutRepository {
     if ((counts[0]?.count || 0) === 0) throw new Error("至少完成一组后才能结束训练。");
     await this.db.execute(
       `UPDATE workout_session
-       SET ended_at = $1, status = 'completed', updated_at = $1
-       WHERE id = $2 AND owner_user_id = $3 AND status = 'active' AND deleted_at IS NULL`,
-      [endedAt, sessionId, this.userId],
+       SET ended_at = $1, status = 'completed', updated_at = $1,
+           end_reason = $2, active_duration_seconds = MAX(active_duration_seconds, $3),
+           companion_instance_id = COALESCE(companion_instance_id, $4)
+       WHERE id = $5 AND owner_user_id = $6 AND status = 'active' AND deleted_at IS NULL`,
+      [endedAt, options.endReason || "completed", Math.max(0, Math.round(options.activeDurationSeconds || 0)), options.companionInstanceId || null, sessionId, this.userId],
     );
   }
 
@@ -438,9 +616,184 @@ class SqliteWorkoutRepository implements WorkoutRepository {
     return hydrateSessions(rows);
   }
 
+  async listCompletedSessionsBetween(startAt: string, endAt: string) {
+    const rows = await this.db.select<SessionRow[]>(`${SESSION_SELECT}
+      WHERE s.owner_user_id = $1 AND s.status = 'completed' AND s.deleted_at IS NULL
+        AND s.ended_at >= $2 AND s.ended_at < $3
+      ORDER BY s.ended_at DESC, we.position ASC, ws.position ASC
+    `, [this.userId, startAt, endAt]);
+    return hydrateSessions(rows);
+  }
+
+  async listTrainingPlans() {
+    const rows = await this.db.select<PlanRow[]>(`${PLAN_SELECT}
+      WHERE p.owner_user_id = $1 AND p.deleted_at IS NULL
+      ORDER BY p.updated_at DESC, d.position ASC, pe.position ASC
+    `, [this.userId]);
+    return hydratePlans(rows);
+  }
+
+  async getTrainingPlanState() {
+    const rows = await this.db.select<Array<{ active_plan_id: string | null; updated_at: string }>>(
+      "SELECT active_plan_id, updated_at FROM training_plan_state WHERE owner_user_id = $1 AND deleted_at IS NULL",
+      [this.userId],
+    );
+    return rows[0]
+      ? { activePlanId: rows[0].active_plan_id, updatedAt: rows[0].updated_at }
+      : emptyPlanState();
+  }
+
+  async saveTrainingPlan(input: TrainingPlanInput) {
+    const name = validatePlanInput(input);
+    const timestamp = now();
+    const planId = input.id || createId("plan");
+    await this.db.execute(
+      `INSERT INTO training_plan (id, owner_user_id, name, updated_at, deleted_at)
+       VALUES ($1, $2, $3, $4, NULL)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at, deleted_at = NULL
+       WHERE training_plan.owner_user_id = excluded.owner_user_id`,
+      [planId, this.userId, name, timestamp],
+    );
+    await this.db.execute(
+      "UPDATE training_plan_day SET deleted_at = $1, updated_at = $1 WHERE plan_id = $2 AND owner_user_id = $3 AND deleted_at IS NULL",
+      [timestamp, planId, this.userId],
+    );
+    await this.db.execute(
+      `UPDATE training_plan_exercise SET deleted_at = $1, updated_at = $1
+       WHERE owner_user_id = $2 AND plan_day_id IN (SELECT id FROM training_plan_day WHERE plan_id = $3) AND deleted_at IS NULL`,
+      [timestamp, this.userId, planId],
+    );
+    for (const [dayIndex, day] of input.days.entries()) {
+      const matchingDays = day.id ? [] : await this.db.select<Array<{ id: string }>>(
+        "SELECT id FROM training_plan_day WHERE plan_id = $1 AND owner_user_id = $2 AND weekday = $3 LIMIT 1",
+        [planId, this.userId, day.weekday],
+      );
+      const dayId = day.id || matchingDays[0]?.id || createId("plan_day");
+      await this.db.execute(
+        `INSERT INTO training_plan_day
+          (id, plan_id, owner_user_id, weekday, title, position, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+         ON CONFLICT(id) DO UPDATE SET weekday = excluded.weekday, title = excluded.title,
+           position = excluded.position, updated_at = excluded.updated_at, deleted_at = NULL
+         WHERE training_plan_day.owner_user_id = excluded.owner_user_id`,
+        [dayId, planId, this.userId, day.weekday, day.title.trim(), dayIndex, timestamp],
+      );
+      for (const [exerciseIndex, exercise] of day.exercises.entries()) {
+        const matchingExercises = exercise.id ? [] : await this.db.select<Array<{ id: string }>>(
+          "SELECT id FROM training_plan_exercise WHERE plan_day_id = $1 AND owner_user_id = $2 AND exercise_id = $3 LIMIT 1",
+          [dayId, this.userId, exercise.exerciseId],
+        );
+        const plannedExerciseId = exercise.id || matchingExercises[0]?.id || createId("plan_exercise");
+        await this.db.execute(
+          `INSERT INTO training_plan_exercise
+            (id, plan_day_id, owner_user_id, exercise_id, position, target_sets, target_reps_min, target_reps_max, updated_at, deleted_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
+           ON CONFLICT(id) DO UPDATE SET exercise_id = excluded.exercise_id, position = excluded.position,
+             target_sets = excluded.target_sets, target_reps_min = excluded.target_reps_min,
+             target_reps_max = excluded.target_reps_max, updated_at = excluded.updated_at, deleted_at = NULL
+           WHERE training_plan_exercise.owner_user_id = excluded.owner_user_id`,
+          [plannedExerciseId, dayId, this.userId, exercise.exerciseId, exerciseIndex, exercise.targetSets,
+            exercise.targetRepsMin, exercise.targetRepsMax, timestamp],
+        );
+      }
+    }
+    const plan = (await this.listTrainingPlans()).find((item) => item.id === planId);
+    if (!plan) throw new Error("训练计划保存失败。");
+    return plan;
+  }
+
+  async duplicateTrainingPlan(planId: string) {
+    const plan = (await this.listTrainingPlans()).find((item) => item.id === planId);
+    if (!plan) throw new Error("没有找到要复制的训练计划。");
+    return this.saveTrainingPlan({
+      name: `${plan.name} 副本`.slice(0, 50),
+      days: plan.days.map((day, position) => ({
+        weekday: day.weekday,
+        title: day.title,
+        position,
+        exercises: day.exercises.map((exercise, exercisePosition) => ({
+          exerciseId: exercise.exerciseId,
+          position: exercisePosition,
+          targetSets: exercise.targetSets,
+          targetRepsMin: exercise.targetRepsMin,
+          targetRepsMax: exercise.targetRepsMax,
+        })),
+      })),
+    });
+  }
+
+  async deleteTrainingPlan(planId: string) {
+    const timestamp = now();
+    await this.db.execute(
+      "UPDATE training_plan SET deleted_at = $1, updated_at = $1 WHERE id = $2 AND owner_user_id = $3 AND deleted_at IS NULL",
+      [timestamp, planId, this.userId],
+    );
+    await this.db.execute(
+      "UPDATE training_plan_state SET active_plan_id = NULL, updated_at = $1 WHERE owner_user_id = $2 AND active_plan_id = $3",
+      [timestamp, this.userId, planId],
+    );
+  }
+
+  async setActiveTrainingPlan(planId: string | null) {
+    if (planId && !(await this.listTrainingPlans()).some((plan) => plan.id === planId)) throw new Error("没有找到要启用的训练计划。");
+    const timestamp = now();
+    await this.db.execute(
+      `INSERT INTO training_plan_state (owner_user_id, active_plan_id, updated_at, deleted_at)
+       VALUES ($1, $2, $3, NULL)
+       ON CONFLICT(owner_user_id) DO UPDATE SET active_plan_id = excluded.active_plan_id,
+         updated_at = excluded.updated_at, deleted_at = NULL`,
+      [this.userId, planId, timestamp],
+    );
+  }
+
+  async startPlannedWorkout(planDayId: string) {
+    const day = (await this.listTrainingPlans()).flatMap((plan) => plan.days).find((item) => item.id === planDayId);
+    if (!day) throw new Error("没有找到要开始的计划训练日。");
+    let session = await this.getActiveSession();
+    const timestamp = now();
+    if (!session) {
+      const sessionId = createId("session");
+      await this.db.execute(
+        `INSERT INTO workout_session
+          (id, started_at, owner_user_id, status, device_id, source_plan_day_id, updated_at, deleted_at)
+         VALUES ($1, $2, $3, 'active', $4, $5, $6, NULL)`,
+        [sessionId, timestamp, this.userId, this.deviceId, planDayId, timestamp],
+      );
+      session = (await this.getActiveSession())!;
+    } else if (!session.sourcePlanDayId) {
+      await this.db.execute(
+        "UPDATE workout_session SET source_plan_day_id = $1, updated_at = $2 WHERE id = $3 AND owner_user_id = $4",
+        [planDayId, timestamp, session.id, this.userId],
+      );
+    }
+    const existingIds = new Set(session.exercises.map((exercise) => exercise.exerciseId));
+    let nextPosition = session.exercises.length;
+    for (const planned of day.exercises) {
+      if (existingIds.has(planned.exerciseId)) continue;
+      const workoutExerciseId = createId("exercise");
+      await this.db.execute(
+        `INSERT INTO workout_exercise
+          (id, session_id, exercise_id, position, owner_user_id, target_reps_min, target_reps_max, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)`,
+        [workoutExerciseId, session.id, planned.exerciseId, nextPosition++, this.userId,
+          planned.targetRepsMin, planned.targetRepsMax, timestamp],
+      );
+      for (const set of createSets(timestamp, planned.targetSets)) {
+        await this.db.execute(
+          `INSERT INTO workout_set (id, workout_exercise_id, position, owner_user_id, updated_at, deleted_at)
+           VALUES ($1, $2, $3, $4, $5, NULL)`,
+          [set.id, workoutExerciseId, set.position, this.userId, timestamp],
+        );
+      }
+    }
+    await this.touchSession(session.id, timestamp);
+    return (await this.getActiveSession())!;
+  }
+
   async getSyncBatch(): Promise<SyncBatch> {
     const sessions = await this.db.select<CloudWorkoutSession[]>(
       `SELECT s.id, s.owner_user_id AS user_id, s.started_at, s.ended_at, s.status, s.device_id,
+              s.source_plan_day_id, s.companion_instance_id, s.active_duration_seconds, s.end_reason,
               s.updated_at AS client_updated_at, s.deleted_at
        FROM workout_session s
        JOIN sync_outbox o ON o.entity_id = s.id AND o.entity_type = 'session' AND o.owner_user_id = s.owner_user_id
@@ -449,7 +802,7 @@ class SqliteWorkoutRepository implements WorkoutRepository {
     );
     const exercises = await this.db.select<CloudWorkoutExercise[]>(
       `SELECT we.id, we.owner_user_id AS user_id, we.session_id, we.exercise_id, we.position,
-              we.updated_at AS client_updated_at, we.deleted_at
+              we.target_reps_min, we.target_reps_max, we.updated_at AS client_updated_at, we.deleted_at
        FROM workout_exercise we
        JOIN sync_outbox o ON o.entity_id = we.id AND o.entity_type = 'exercise' AND o.owner_user_id = we.owner_user_id
        WHERE we.owner_user_id = $1 ORDER BY o.queued_at`,
@@ -464,18 +817,62 @@ class SqliteWorkoutRepository implements WorkoutRepository {
        WHERE ws.owner_user_id = $1 ORDER BY o.queued_at`,
       [this.userId],
     );
-    return { sessions, exercises, sets: sets.map((set) => ({ ...set, completed: set.completed === 1 })) };
+    const plans = await this.db.select<CloudTrainingPlan[]>(
+      `SELECT p.id, p.owner_user_id AS user_id, p.name, p.updated_at AS client_updated_at, p.deleted_at
+       FROM training_plan p JOIN sync_outbox o ON o.entity_id = p.id AND o.entity_type = 'plan' AND o.owner_user_id = p.owner_user_id
+       WHERE p.owner_user_id = $1 ORDER BY o.queued_at`,
+      [this.userId],
+    );
+    const planDays = await this.db.select<CloudTrainingPlanDay[]>(
+      `SELECT d.id, d.owner_user_id AS user_id, d.plan_id, d.weekday, d.title, d.position,
+              d.updated_at AS client_updated_at, d.deleted_at
+       FROM training_plan_day d JOIN sync_outbox o ON o.entity_id = d.id AND o.entity_type = 'plan_day' AND o.owner_user_id = d.owner_user_id
+       WHERE d.owner_user_id = $1 ORDER BY o.queued_at`,
+      [this.userId],
+    );
+    const planExercises = await this.db.select<CloudPlannedExercise[]>(
+      `SELECT pe.id, pe.owner_user_id AS user_id, pe.plan_day_id, pe.exercise_id, pe.position,
+              pe.target_sets, pe.target_reps_min, pe.target_reps_max,
+              pe.updated_at AS client_updated_at, pe.deleted_at
+       FROM training_plan_exercise pe JOIN sync_outbox o ON o.entity_id = pe.id AND o.entity_type = 'plan_exercise' AND o.owner_user_id = pe.owner_user_id
+       WHERE pe.owner_user_id = $1 ORDER BY o.queued_at`,
+      [this.userId],
+    );
+    const planStates = await this.db.select<CloudTrainingPlanState[]>(
+      `SELECT ps.owner_user_id AS id, ps.owner_user_id AS user_id, ps.active_plan_id,
+              ps.updated_at AS client_updated_at, ps.deleted_at
+       FROM training_plan_state ps JOIN sync_outbox o ON o.entity_id = ps.owner_user_id
+         AND o.entity_type = 'plan_state' AND o.owner_user_id = ps.owner_user_id
+       WHERE ps.owner_user_id = $1 ORDER BY o.queued_at`,
+      [this.userId],
+    );
+    return {
+      sessions,
+      exercises,
+      sets: sets.map((set) => ({ ...set, completed: set.completed === 1 })),
+      plans,
+      planDays,
+      planExercises,
+      planStates,
+    };
   }
 
   async markSynced(entityType: SyncEntityType, records: Array<{ id: string; client_updated_at: string }>) {
-    const table = entityType === "session" ? "workout_session" : entityType === "exercise" ? "workout_exercise" : "workout_set";
+    const table = entityType === "session" ? "workout_session"
+      : entityType === "exercise" ? "workout_exercise"
+        : entityType === "set" ? "workout_set"
+          : entityType === "plan" ? "training_plan"
+            : entityType === "plan_day" ? "training_plan_day"
+              : entityType === "plan_exercise" ? "training_plan_exercise"
+                : "training_plan_state";
+    const idColumn = entityType === "plan_state" ? "owner_user_id" : "id";
     for (const record of records) {
       await this.db.execute(
         `DELETE FROM sync_outbox
          WHERE owner_user_id = $1 AND entity_type = $2 AND entity_id = $3
            AND EXISTS (
              SELECT 1 FROM ${table}
-             WHERE id = $3 AND owner_user_id = $1
+             WHERE ${idColumn} = $3 AND owner_user_id = $1
                AND ABS(julianday(updated_at) - julianday($4)) < 0.00000001
            )`,
         [this.userId, entityType, record.id, record.client_updated_at],
@@ -504,11 +901,14 @@ class SqliteWorkoutRepository implements WorkoutRepository {
       const clientUpdatedAt = canonicalTimestamp(session.client_updated_at);
       await this.db.execute(
         `INSERT INTO workout_session
-          (id, started_at, ended_at, owner_user_id, status, device_id, updated_at, deleted_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          (id, started_at, ended_at, owner_user_id, status, device_id, source_plan_day_id,
+           companion_instance_id, active_duration_seconds, end_reason, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT(id) DO UPDATE SET
            started_at = excluded.started_at, ended_at = excluded.ended_at, owner_user_id = excluded.owner_user_id,
-           status = excluded.status, device_id = excluded.device_id, updated_at = excluded.updated_at,
+           status = excluded.status, device_id = excluded.device_id, source_plan_day_id = excluded.source_plan_day_id,
+           companion_instance_id = excluded.companion_instance_id, active_duration_seconds = excluded.active_duration_seconds,
+           end_reason = excluded.end_reason, updated_at = excluded.updated_at,
            deleted_at = excluded.deleted_at
          WHERE excluded.owner_user_id = workout_session.owner_user_id
            AND excluded.updated_at >= workout_session.updated_at`,
@@ -519,6 +919,10 @@ class SqliteWorkoutRepository implements WorkoutRepository {
           this.userId,
           session.status,
           session.device_id,
+          session.source_plan_day_id,
+          session.companion_instance_id,
+          session.active_duration_seconds || 0,
+          session.end_reason,
           clientUpdatedAt,
           canonicalOptionalTimestamp(session.deleted_at),
         ],
@@ -529,11 +933,12 @@ class SqliteWorkoutRepository implements WorkoutRepository {
       const clientUpdatedAt = canonicalTimestamp(exercise.client_updated_at);
       await this.db.execute(
         `INSERT INTO workout_exercise
-          (id, session_id, exercise_id, position, owner_user_id, updated_at, deleted_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (id, session_id, exercise_id, position, owner_user_id, target_reps_min, target_reps_max, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT(id) DO UPDATE SET
            session_id = excluded.session_id, exercise_id = excluded.exercise_id, position = excluded.position,
-           owner_user_id = excluded.owner_user_id, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+           owner_user_id = excluded.owner_user_id, target_reps_min = excluded.target_reps_min,
+           target_reps_max = excluded.target_reps_max, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
          WHERE excluded.owner_user_id = workout_exercise.owner_user_id
            AND excluded.updated_at >= workout_exercise.updated_at`,
         [
@@ -542,6 +947,8 @@ class SqliteWorkoutRepository implements WorkoutRepository {
           exercise.exercise_id,
           exercise.position,
           this.userId,
+          exercise.target_reps_min,
+          exercise.target_reps_max,
           clientUpdatedAt,
           canonicalOptionalTimestamp(exercise.deleted_at),
         ],
@@ -575,6 +982,60 @@ class SqliteWorkoutRepository implements WorkoutRepository {
         ],
       );
       await this.finishRemoteApply("set", set.id, clientUpdatedAt, "workout_set");
+    }
+    for (const plan of batch.plans) {
+      const clientUpdatedAt = canonicalTimestamp(plan.client_updated_at);
+      await this.db.execute(
+        `INSERT INTO training_plan (id, owner_user_id, name, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+         WHERE excluded.owner_user_id = training_plan.owner_user_id AND excluded.updated_at >= training_plan.updated_at`,
+        [plan.id, this.userId, plan.name, clientUpdatedAt, canonicalOptionalTimestamp(plan.deleted_at)],
+      );
+      await this.finishRemoteApply("plan", plan.id, clientUpdatedAt, "training_plan");
+    }
+    for (const day of batch.planDays) {
+      const clientUpdatedAt = canonicalTimestamp(day.client_updated_at);
+      await this.db.execute(
+        `INSERT INTO training_plan_day
+          (id, plan_id, owner_user_id, weekday, title, position, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT(id) DO UPDATE SET plan_id = excluded.plan_id, weekday = excluded.weekday,
+           title = excluded.title, position = excluded.position, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+         WHERE excluded.owner_user_id = training_plan_day.owner_user_id AND excluded.updated_at >= training_plan_day.updated_at`,
+        [day.id, day.plan_id, this.userId, day.weekday, day.title, day.position, clientUpdatedAt,
+          canonicalOptionalTimestamp(day.deleted_at)],
+      );
+      await this.finishRemoteApply("plan_day", day.id, clientUpdatedAt, "training_plan_day");
+    }
+    for (const exercise of batch.planExercises) {
+      const clientUpdatedAt = canonicalTimestamp(exercise.client_updated_at);
+      await this.db.execute(
+        `INSERT INTO training_plan_exercise
+          (id, plan_day_id, owner_user_id, exercise_id, position, target_sets, target_reps_min, target_reps_max, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT(id) DO UPDATE SET plan_day_id = excluded.plan_day_id, exercise_id = excluded.exercise_id,
+           position = excluded.position, target_sets = excluded.target_sets, target_reps_min = excluded.target_reps_min,
+           target_reps_max = excluded.target_reps_max, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+         WHERE excluded.owner_user_id = training_plan_exercise.owner_user_id
+           AND excluded.updated_at >= training_plan_exercise.updated_at`,
+        [exercise.id, exercise.plan_day_id, this.userId, exercise.exercise_id, exercise.position,
+          exercise.target_sets, exercise.target_reps_min, exercise.target_reps_max, clientUpdatedAt,
+          canonicalOptionalTimestamp(exercise.deleted_at)],
+      );
+      await this.finishRemoteApply("plan_exercise", exercise.id, clientUpdatedAt, "training_plan_exercise");
+    }
+    for (const state of batch.planStates) {
+      const clientUpdatedAt = canonicalTimestamp(state.client_updated_at);
+      await this.db.execute(
+        `INSERT INTO training_plan_state (owner_user_id, active_plan_id, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT(owner_user_id) DO UPDATE SET active_plan_id = excluded.active_plan_id,
+           updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+         WHERE excluded.updated_at >= training_plan_state.updated_at`,
+        [this.userId, state.active_plan_id, clientUpdatedAt, canonicalOptionalTimestamp(state.deleted_at)],
+      );
+      await this.finishRemoteApply("plan_state", state.id, clientUpdatedAt, "training_plan_state");
     }
   }
 
@@ -611,6 +1072,8 @@ class SqliteWorkoutRepository implements WorkoutRepository {
   async clearUserData() {
     await this.db.execute("DELETE FROM sync_outbox WHERE owner_user_id = $1", [this.userId]);
     await this.db.execute("DELETE FROM sync_state WHERE owner_user_id = $1", [this.userId]);
+    await this.db.execute("DELETE FROM training_plan_state WHERE owner_user_id = $1", [this.userId]);
+    await this.db.execute("DELETE FROM training_plan WHERE owner_user_id = $1", [this.userId]);
     await this.db.execute("DELETE FROM workout_session WHERE owner_user_id = $1", [this.userId]);
   }
 
@@ -625,10 +1088,11 @@ class SqliteWorkoutRepository implements WorkoutRepository {
     entityType: SyncEntityType,
     entityId: string,
     remoteUpdatedAt: string,
-    table: "workout_session" | "workout_exercise" | "workout_set",
+    table: "workout_session" | "workout_exercise" | "workout_set" | "training_plan" | "training_plan_day" | "training_plan_exercise" | "training_plan_state",
   ) {
+    const idColumn = table === "training_plan_state" ? "owner_user_id" : "id";
     const local = await this.db.select<Array<{ updated_at: string }>>(
-      `SELECT updated_at FROM ${table} WHERE id = $1 AND owner_user_id = $2`,
+      `SELECT updated_at FROM ${table} WHERE ${idColumn} = $1 AND owner_user_id = $2`,
       [entityId, this.userId],
     );
     if (local[0]?.updated_at === remoteUpdatedAt) {
@@ -664,7 +1128,7 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
       const value = JSON.parse(legacy) as BrowserStore;
       const timestamp = now();
       const sessions = (value.sessions || []).map((session) => this.normalizeSession(session, timestamp));
-      this.write({ sessions });
+      this.write({ sessions, plans: [], planState: emptyPlanState() });
       localStorage.removeItem(LEGACY_BROWSER_STORAGE_KEY);
     } catch {
       // Keep an unreadable legacy value untouched so it can be recovered manually.
@@ -678,10 +1142,16 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
       ownerUserId: this.userId,
       status,
       deviceId: session.deviceId || this.deviceId,
+      sourcePlanDayId: session.sourcePlanDayId || null,
+      companionInstanceId: session.companionInstanceId || null,
+      activeDurationSeconds: session.activeDurationSeconds || 0,
+      endReason: session.endReason || null,
       updatedAt: session.updatedAt || session.endedAt || session.startedAt || fallback,
       deletedAt: session.deletedAt || null,
       exercises: (session.exercises || []).map((exercise) => ({
         ...exercise,
+        targetRepsMin: exercise.targetRepsMin || null,
+        targetRepsMax: exercise.targetRepsMax || null,
         updatedAt: exercise.updatedAt || fallback,
         deletedAt: exercise.deletedAt || null,
         sets: (exercise.sets || []).map((set) => ({
@@ -696,11 +1166,15 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
   private read(): BrowserStore {
     try {
       const stored = localStorage.getItem(this.storageKey);
-      if (!stored) return { sessions: [] };
+      if (!stored) return { sessions: [], plans: [], planState: emptyPlanState() };
       const value = JSON.parse(stored) as BrowserStore;
-      return { sessions: Array.isArray(value.sessions) ? value.sessions : [] };
+      return {
+        sessions: Array.isArray(value.sessions) ? value.sessions.map((session) => this.normalizeSession(session, now())) : [],
+        plans: Array.isArray(value.plans) ? value.plans : [],
+        planState: value.planState || emptyPlanState(),
+      };
     } catch {
-      return { sessions: [] };
+      return { sessions: [], plans: [], planState: emptyPlanState() };
     }
   }
 
@@ -726,7 +1200,8 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
     if (!session) {
       session = {
         id: createId("session"), ownerUserId: this.userId, startedAt: timestamp, endedAt: null,
-        status: "active", deviceId: this.deviceId, updatedAt: timestamp, deletedAt: null, exercises: [],
+        status: "active", deviceId: this.deviceId, sourcePlanDayId: null, companionInstanceId: null,
+        activeDurationSeconds: 0, endReason: null, updatedAt: timestamp, deletedAt: null, exercises: [],
       };
       store.sessions.push(session);
     }
@@ -741,6 +1216,7 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
     } else {
       session.exercises.push({
         id: createId("exercise"), exerciseId, position: session.exercises.length,
+        targetRepsMin: null, targetRepsMax: null,
         updatedAt: timestamp, deletedAt: null, sets: createSets(timestamp),
       });
     }
@@ -817,7 +1293,21 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
     this.write(store);
   }
 
-  async completeSession(sessionId: string, endedAt: string) {
+  async attachCompanion(sessionId: string, companionId: string) {
+    const store = this.read();
+    const session = store.sessions.find((item) => item.id === sessionId && item.status === "active" && !item.deletedAt);
+    if (!session) throw new Error("没有找到正在进行的训练。");
+    if (!session.companionInstanceId) session.companionInstanceId = companionId;
+    session.updatedAt = now();
+    this.write(store);
+    return clone(session);
+  }
+
+  async completeSession(sessionId: string, endedAt: string, options: {
+    endReason?: WorkoutSession["endReason"] extends infer T ? Exclude<T, null> : never;
+    activeDurationSeconds?: number;
+    companionInstanceId?: string | null;
+  } = {}) {
     const store = this.read();
     const session = store.sessions.find((item) => item.id === sessionId && item.status === "active" && !item.deletedAt);
     if (!session) throw new Error("没有找到正在进行的训练。");
@@ -826,6 +1316,9 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
     }
     session.endedAt = endedAt;
     session.status = "completed";
+    session.endReason = options.endReason || "completed";
+    session.activeDurationSeconds = Math.max(session.activeDurationSeconds || 0, Math.round(options.activeDurationSeconds || 0));
+    session.companionInstanceId ||= options.companionInstanceId || null;
     session.updatedAt = endedAt;
     this.write(store);
   }
@@ -849,7 +1342,132 @@ class BrowserPreviewWorkoutRepository implements WorkoutRepository {
       .slice(0, limit));
   }
 
-  async getSyncBatch(): Promise<SyncBatch> { return { sessions: [], exercises: [], sets: [] }; }
+  async listCompletedSessionsBetween(startAt: string, endAt: string) {
+    return clone(this.read().sessions
+      .filter((session) => !session.deletedAt && session.status === "completed" && session.endedAt
+        && session.endedAt >= startAt && session.endedAt < endAt)
+      .sort((a, b) => (b.endedAt || b.updatedAt).localeCompare(a.endedAt || a.updatedAt)));
+  }
+
+  async listTrainingPlans() {
+    return clone(this.read().plans.filter((plan) => !plan.deletedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+  }
+
+  async getTrainingPlanState() {
+    return clone(this.read().planState);
+  }
+
+  async saveTrainingPlan(input: TrainingPlanInput) {
+    const name = validatePlanInput(input);
+    const store = this.read();
+    const timestamp = now();
+    const existing = input.id ? store.plans.find((plan) => plan.id === input.id) : null;
+    const plan: TrainingPlan = {
+      id: existing?.id || createId("plan"),
+      ownerUserId: this.userId,
+      name,
+      updatedAt: timestamp,
+      deletedAt: null,
+      days: input.days.map((day, position) => ({
+        id: day.id || createId("plan_day"),
+        weekday: day.weekday,
+        title: day.title.trim(),
+        position,
+        updatedAt: timestamp,
+        deletedAt: null,
+        exercises: day.exercises.map((exercise, exercisePosition) => ({
+          id: exercise.id || createId("plan_exercise"),
+          exerciseId: exercise.exerciseId,
+          position: exercisePosition,
+          targetSets: exercise.targetSets,
+          targetRepsMin: exercise.targetRepsMin,
+          targetRepsMax: exercise.targetRepsMax,
+          updatedAt: timestamp,
+          deletedAt: null,
+        })),
+      })),
+    };
+    if (existing) Object.assign(existing, plan);
+    else store.plans.push(plan);
+    this.write(store);
+    return clone(plan);
+  }
+
+  async duplicateTrainingPlan(planId: string) {
+    const plan = this.read().plans.find((item) => item.id === planId && !item.deletedAt);
+    if (!plan) throw new Error("没有找到要复制的训练计划。");
+    return this.saveTrainingPlan({
+      name: `${plan.name} 副本`.slice(0, 50),
+      days: plan.days.map((day, position) => ({
+        weekday: day.weekday,
+        title: day.title,
+        position,
+        exercises: day.exercises.map((exercise, exercisePosition) => ({
+          exerciseId: exercise.exerciseId,
+          position: exercisePosition,
+          targetSets: exercise.targetSets,
+          targetRepsMin: exercise.targetRepsMin,
+          targetRepsMax: exercise.targetRepsMax,
+        })),
+      })),
+    });
+  }
+
+  async deleteTrainingPlan(planId: string) {
+    const store = this.read();
+    const plan = store.plans.find((item) => item.id === planId && !item.deletedAt);
+    if (!plan) return;
+    const timestamp = now();
+    plan.deletedAt = timestamp;
+    plan.updatedAt = timestamp;
+    if (store.planState.activePlanId === planId) store.planState = { activePlanId: null, updatedAt: timestamp };
+    this.write(store);
+  }
+
+  async setActiveTrainingPlan(planId: string | null) {
+    const store = this.read();
+    if (planId && !store.plans.some((plan) => plan.id === planId && !plan.deletedAt)) throw new Error("没有找到要启用的训练计划。");
+    store.planState = { activePlanId: planId, updatedAt: now() };
+    this.write(store);
+  }
+
+  async startPlannedWorkout(planDayId: string) {
+    const store = this.read();
+    const day = store.plans.filter((plan) => !plan.deletedAt).flatMap((plan) => plan.days).find((item) => item.id === planDayId);
+    if (!day) throw new Error("没有找到要开始的计划训练日。");
+    const timestamp = now();
+    let session = store.sessions.find((item) => item.status === "active" && !item.deletedAt);
+    if (!session) {
+      session = {
+        id: createId("session"), ownerUserId: this.userId, startedAt: timestamp, endedAt: null,
+        status: "active", deviceId: this.deviceId, sourcePlanDayId: planDayId,
+        companionInstanceId: null, activeDurationSeconds: 0, endReason: null,
+        updatedAt: timestamp, deletedAt: null, exercises: [],
+      };
+      store.sessions.push(session);
+    } else if (!session.sourcePlanDayId) session.sourcePlanDayId = planDayId;
+    const existingIds = new Set(session.exercises.filter((exercise) => !exercise.deletedAt).map((exercise) => exercise.exerciseId));
+    for (const planned of day.exercises) {
+      if (existingIds.has(planned.exerciseId)) continue;
+      session.exercises.push({
+        id: createId("exercise"),
+        exerciseId: planned.exerciseId,
+        position: session.exercises.length,
+        targetRepsMin: planned.targetRepsMin,
+        targetRepsMax: planned.targetRepsMax,
+        updatedAt: timestamp,
+        deletedAt: null,
+        sets: createSets(timestamp, planned.targetSets),
+      });
+    }
+    session.updatedAt = timestamp;
+    this.write(store);
+    return clone(session);
+  }
+
+  async getSyncBatch(): Promise<SyncBatch> {
+    return { sessions: [], exercises: [], sets: [], plans: [], planDays: [], planExercises: [], planStates: [] };
+  }
   async markSynced(_entityType: SyncEntityType, _records: Array<{ id: string; client_updated_at: string }>) {}
   async getPendingCount() { return 0; }
   async getLastPulledAt() { return null; }

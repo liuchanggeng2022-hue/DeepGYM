@@ -1,5 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { CompanionRepository, CompanionSyncBatch } from "./companion-types";
 import type {
+  CloudPlannedExercise,
+  CloudTrainingPlan,
+  CloudTrainingPlanDay,
+  CloudTrainingPlanState,
   CloudWorkoutExercise,
   CloudWorkoutSession,
   CloudWorkoutSet,
@@ -33,8 +38,23 @@ function syncError(reason: unknown) {
   return message || "云端同步失败，本机数据不会丢失。";
 }
 
-function latestRemoteCursor(batch: SyncBatch) {
-  const timestamps = [...batch.sessions, ...batch.exercises, ...batch.sets]
+function latestRemoteCursor(batch: SyncBatch, companions?: CompanionSyncBatch) {
+  const timestamps = [
+    ...batch.plans,
+    ...batch.planDays,
+    ...batch.planExercises,
+    ...batch.planStates,
+    ...batch.sessions,
+    ...batch.exercises,
+    ...batch.sets,
+    ...(companions?.instances || []),
+    ...(companions?.states || []),
+    ...(companions?.settings || []),
+    ...(companions?.feedback || []),
+    ...(companions?.growthEvents || []),
+    ...(companions?.milestones || []),
+    ...(companions?.unlocks || []),
+  ]
     .map((row) => row.updated_at)
     .filter((value): value is string => Boolean(value));
   return timestamps.sort().at(-1) || null;
@@ -51,6 +71,7 @@ export class SyncService {
     private readonly repository: WorkoutRepository,
     private readonly client: SupabaseClient,
     private readonly userId: string,
+    private readonly companionRepository?: CompanionRepository,
   ) {}
 
   start() {
@@ -87,8 +108,9 @@ export class SyncService {
     }
     this.setState({ status: "syncing", error: undefined });
     try {
-      const remote = await this.pullRemote();
+      const [remote, remoteCompanions] = await Promise.all([this.pullRemote(), this.pullCompanionRemote()]);
       await this.repository.applyRemote(remote);
+      if (remoteCompanions && this.companionRepository) await this.companionRepository.applyRemote(remoteCompanions);
       const conflicts = await this.findConflicts();
       const pendingCount = await this.repository.getPendingCount();
       this.setState({
@@ -124,17 +146,45 @@ export class SyncService {
     this.setState({ status: "syncing", error: undefined });
     try {
       const batch = await this.repository.getSyncBatch();
+      const companions = await this.companionRepository?.getSyncBatch();
+      if (companions) {
+        await this.push("companion_instances", companions.instances);
+        await this.companionRepository!.markSynced("companion", companions.instances);
+        await this.push("companion_states", companions.states);
+        await this.companionRepository!.markSynced("companion_state", companions.states);
+        await this.push("companion_settings", companions.settings);
+        await this.companionRepository!.markSynced("companion_settings", companions.settings);
+      }
+      await this.push("training_plans", batch.plans);
+      await this.repository.markSynced("plan", batch.plans);
+      await this.push("training_plan_days", batch.planDays);
+      await this.repository.markSynced("plan_day", batch.planDays);
+      await this.push("training_plan_exercises", batch.planExercises);
+      await this.repository.markSynced("plan_exercise", batch.planExercises);
+      await this.push("training_plan_states", batch.planStates);
+      await this.repository.markSynced("plan_state", batch.planStates);
       await this.push("workout_sessions", batch.sessions);
       await this.repository.markSynced("session", batch.sessions);
       await this.push("workout_exercises", batch.exercises);
       await this.repository.markSynced("exercise", batch.exercises);
       await this.push("workout_sets", batch.sets);
       await this.repository.markSynced("set", batch.sets);
+      if (companions) {
+        await this.push("workout_feedback", companions.feedback);
+        await this.companionRepository!.markSynced("workout_feedback", companions.feedback);
+        await this.push("companion_growth_events", companions.growthEvents);
+        await this.companionRepository!.markSynced("growth_event", companions.growthEvents);
+        await this.push("companion_milestones", companions.milestones);
+        await this.companionRepository!.markSynced("milestone", companions.milestones);
+        await this.push("companion_unlocks", companions.unlocks);
+        await this.companionRepository!.markSynced("unlock", companions.unlocks);
+      }
 
-      const remote = await this.pullRemote(batch);
+      const [remote, remoteCompanions] = await Promise.all([this.pullRemote(batch), this.pullCompanionRemote()]);
       await this.repository.applyRemote(remote);
+      if (remoteCompanions && this.companionRepository) await this.companionRepository.applyRemote(remoteCompanions);
       const syncedAt = new Date().toISOString();
-      await this.repository.setLastSyncedAt(latestRemoteCursor(remote), syncedAt);
+      await this.repository.setLastSyncedAt(latestRemoteCursor(remote, remoteCompanions || undefined), syncedAt);
       const conflicts = await this.findConflicts();
       const pendingCount = await this.repository.getPendingCount();
       this.setState({
@@ -192,19 +242,65 @@ export class SyncService {
       for (const row of confirmed) records.set(row.id, row);
       return [...records.values()];
     };
-    const [sessions, exercises, sets, confirmedSessions, confirmedExercises, confirmedSets] = await Promise.all([
+    const [
+      plans,
+      planDays,
+      planExercises,
+      planStates,
+      sessions,
+      exercises,
+      sets,
+      confirmedPlans,
+      confirmedPlanDays,
+      confirmedPlanExercises,
+      confirmedPlanStates,
+      confirmedSessions,
+      confirmedExercises,
+      confirmedSets,
+    ] = await Promise.all([
+      fetchRows<CloudTrainingPlan>("training_plans"),
+      fetchRows<CloudTrainingPlanDay>("training_plan_days"),
+      fetchRows<CloudPlannedExercise>("training_plan_exercises"),
+      fetchRows<CloudTrainingPlanState>("training_plan_states"),
       fetchRows<CloudWorkoutSession>("workout_sessions"),
       fetchRows<CloudWorkoutExercise>("workout_exercises"),
       fetchRows<CloudWorkoutSet>("workout_sets"),
+      fetchIds<CloudTrainingPlan>("training_plans", pushed?.plans.map((row) => row.id) || []),
+      fetchIds<CloudTrainingPlanDay>("training_plan_days", pushed?.planDays.map((row) => row.id) || []),
+      fetchIds<CloudPlannedExercise>("training_plan_exercises", pushed?.planExercises.map((row) => row.id) || []),
+      fetchIds<CloudTrainingPlanState>("training_plan_states", pushed?.planStates.map((row) => row.id) || []),
       fetchIds<CloudWorkoutSession>("workout_sessions", pushed?.sessions.map((row) => row.id) || []),
       fetchIds<CloudWorkoutExercise>("workout_exercises", pushed?.exercises.map((row) => row.id) || []),
       fetchIds<CloudWorkoutSet>("workout_sets", pushed?.sets.map((row) => row.id) || []),
     ]);
     return {
+      plans: merge(plans, confirmedPlans),
+      planDays: merge(planDays, confirmedPlanDays),
+      planExercises: merge(planExercises, confirmedPlanExercises),
+      planStates: merge(planStates, confirmedPlanStates),
       sessions: merge(sessions, confirmedSessions),
       exercises: merge(exercises, confirmedExercises),
       sets: merge(sets, confirmedSets),
     };
+  }
+
+  private async pullCompanionRemote(): Promise<CompanionSyncBatch | null> {
+    if (!this.companionRepository) return null;
+    const fetchRows = async <T,>(table: string) => {
+      const { data, error } = await this.client.from(table).select("*").eq("user_id", this.userId).order("updated_at", { ascending: true });
+      if (error) throw error;
+      return (data || []) as T[];
+    };
+    const [instances, states, settings, feedback, growthEvents, milestones, unlocks] = await Promise.all([
+      fetchRows<CompanionSyncBatch["instances"][number]>("companion_instances"),
+      fetchRows<CompanionSyncBatch["states"][number]>("companion_states"),
+      fetchRows<CompanionSyncBatch["settings"][number]>("companion_settings"),
+      fetchRows<CompanionSyncBatch["feedback"][number]>("workout_feedback"),
+      fetchRows<CompanionSyncBatch["growthEvents"][number]>("companion_growth_events"),
+      fetchRows<CompanionSyncBatch["milestones"][number]>("companion_milestones"),
+      fetchRows<CompanionSyncBatch["unlocks"][number]>("companion_unlocks"),
+    ]);
+    return { instances, states, settings, feedback, growthEvents, milestones, unlocks };
   }
 
   private async findConflicts() {

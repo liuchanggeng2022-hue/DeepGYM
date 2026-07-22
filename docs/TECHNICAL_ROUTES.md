@@ -113,13 +113,16 @@
 ```text
 界面层
   ├─ 动作库 / 搜索筛选 / 动作详情
-  ├─ 今日训练 / 组记录 / 休息计时
-  └─ 今日总结 / 历史 / 趋势
+  ├─ 周期训练计划 / 今日组记录
+  ├─ 今日总结 / 日历数据 / 趋势
+  └─ 搭档主页 / 成长 / 训练同步 / 结算
           │
 应用服务层
   ├─ ExerciseCatalog
   ├─ WorkoutSession
   ├─ WorkoutSummary
+  ├─ CompanionGrowthService
+  ├─ CompanionRepository
   └─ ImportExport
           │
 本地存储层
@@ -160,6 +163,18 @@
 | `sync_outbox` | 本地待上传操作 | `owner_user_id`, `entity_type`, `entity_id`, `queued_at` |
 | `sync_state` | 每个账号的拉取游标 | `owner_user_id`, `last_pulled_at`, `last_synced_at` |
 | `device_identity` | 当前安装的稳定设备 ID | `id`, `created_at` |
+| `training_plan` | 用户保存的一套周期计划 | `id`, `owner_user_id`, `name`, `updated_at`, `deleted_at` |
+| `training_plan_day` | 计划内的星期安排 | `id`, `plan_id`, `weekday`, `title`, `position` |
+| `training_plan_exercise` | 计划日中的动作目标 | `exercise_id`, `target_sets`, `target_reps_min`, `target_reps_max` |
+| `training_plan_state` | 每个账号当前启用的唯一计划 | `owner_user_id`, `active_plan_id`, `updated_at` |
+| `companion_instance` | 每名用户搭档的独立成长实例 | `definition_id`, `created_at`, `current_stage`, `growth_xp`, `bond_xp` |
+| `companion_state` | 当前共同训练搭档 | `owner_user_id`, `active_companion_id` |
+| `companion_settings` | 互动与休息设置 | `interaction_frequency`, `reduce_motion`, `default_rest_seconds`, `recovery_mode` |
+| `workout_feedback` | 训练强度、感受和次日恢复 | `session_id`, `rpe`, `feeling`, `recovery` |
+| `companion_growth_event` | 可追溯、可撤销的成长账本 | `source_type`, `source_id`, `rule_version`, `xp_delta`, `reversed_at` |
+| `companion_milestone` | 共同成长时间轴 | `kind`, `stage`, `occurred_at`, `metadata_json` |
+| `companion_unlock` | 搭档奖励与解锁 | `unlock_key`, `unlocked_at` |
+| `workout_runtime_state` | 本机训练节奏与休息计时 | `phase`, `set_id`, `rest_ends_at`, `accumulated_active_seconds` |
 
 第一版内部统一使用 kg，因此数据库只保存重量数值，不保存展示文本。训练总结由已完成且次数有效的组实时计算，不另存一份可能与原始记录冲突的数据。结构写入通过 SQLite 触发器在同一事务内进入 outbox；删除使用软删除，便于传播到其他设备。云端表全部带 `user_id` 并启用 RLS。多设备可暂时产生多场进行中训练，用户选定一场后，其余转为未完成历史且不计入总结。
 
@@ -167,7 +182,7 @@
 
 - Supabase Auth：邮箱密码、注册验证码与恢复验证码；
 - 会话存储：Supabase 自定义 storage adapter 调用 Tauri 命令，落入系统凭据管理器；
-- 同步顺序：上传训练 → 动作 → 组，再按游标拉取三张云端表；
+- 同步顺序：搭档实例与设置 → 计划 → 计划日 → 计划动作 → 当前计划状态 → 训练 → 动作 → 组 → 反馈 → 成长事件 → 里程碑与解锁，再拉取云端变更；
 - 冲突规则：同一 ID 采用较新的 `client_updated_at`，拉取游标保留 60 秒重叠窗口；
 - 账号删除：客户端重新验证密码后调用受保护 Edge Function，由服务端权限删除 Auth 用户，外键级联删除训练数据；
 - 安全边界：publishable key 可进入客户端，secret/service role 永不进入应用、日志或 Git。
@@ -182,6 +197,8 @@
 2. 固化搜索、筛选、详情与媒体状态等产品行为；早期原型中的可见署名仅作为历史记录保留，正式 React 应用按已取得的许可不展示外链署名。
 
 当前 React 组件已复用原型的视觉、数据映射和验收标准；训练记录 MVP 只在正式 React/Tauri 应用中实现，早期原型不再增加新业务功能。
+
+搭档角色采用版本化本地目录与 2.5D 预渲染素材，不新增 3D 或动画运行时依赖。首个正式角色“力力兔”配置六个阶段、静态素材、待机/休息/庆祝/恢复动画和 12 类动作动画；`scripts/build-companion-assets.py` 在开发阶段把角色原图构建为透明静态与动画 WebP。训练成长由本地确定性规则和唯一来源事件计算，再通过 RLS 同步，确保离线可结算并避免多设备重复奖励。
 
 ## 10. 发布与测试要求
 

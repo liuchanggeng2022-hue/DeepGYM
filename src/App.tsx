@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import appIcon from "../assets/deepgym-icon.png";
 import {
   bodyPartLabel,
   CATEGORY_ORDER,
@@ -11,20 +12,57 @@ import {
   muscleLabel,
   normalize,
   PAGE_SIZE,
-  SOURCE_BASE,
 } from "./exercise-data";
 import type { Exercise, IndexedExercise } from "./types";
-import { TodayWorkoutView, WorkoutHistoryView } from "./WorkoutViews";
+import { TodayWorkoutView } from "./WorkoutViews";
+import { TrainingDataView, TrainingPlanView, TrainingTabs } from "./TrainingHubViews";
+import { CompanionSettlementDialog, CompanionView, WorkoutFeedbackDialog } from "./CompanionViews";
 import { AccountMenu, AccountSettingsView, ActiveWorkoutConflict } from "./AuthViews";
+import { COMPANION_CATALOG } from "./companion-catalog";
+import { motionFamilyForExercise } from "./companion-growth";
+import { companionDefinitionFor, createCompanionRepository } from "./companion-storage";
 import { createProfileService } from "./profile-service";
 import { SyncService } from "./sync-service";
 import { createWorkoutRepository } from "./workout-storage";
-import { summarizeDay } from "./workout-summary";
+import { summarizeDay, summarizeSessions } from "./workout-summary";
 import type { AuthService, AuthUser } from "./auth-types";
 import type { UserProfile } from "./profile-types";
-import type { AppView, SyncState, WorkoutRepository, WorkoutSession, WorkoutSet } from "./workout-types";
+import type {
+  CompanionDefinition,
+  CompanionInstance,
+  CompanionMilestone,
+  CompanionProgress,
+  CompanionRepository,
+  CompanionSettings,
+  CompanionSettlement,
+  RecoveryFeeling,
+  WorkoutEndReason,
+  WorkoutFeeling,
+  WorkoutRuntimeState,
+} from "./companion-types";
+import type {
+  AppView,
+  SyncState,
+  TrainingPlan,
+  TrainingPlanInput,
+  TrainingPlanState,
+  TrainingSection,
+  WorkoutRepository,
+  WorkoutSession,
+  WorkoutSet,
+} from "./workout-types";
 
 const DATA_URL = "/data/exercises.json";
+
+const INITIAL_COMPANION_SETTINGS: CompanionSettings = {
+  textPromptsEnabled: true,
+  interactionFrequency: "standard",
+  animationIntensity: 2,
+  reduceMotion: false,
+  defaultRestSeconds: 90,
+  recoveryMode: false,
+  updatedAt: new Date(0).toISOString(),
+};
 
 function DumbbellIcon({ small = false }: { small?: boolean }) {
   return (
@@ -200,7 +238,6 @@ function ExerciseDialog({
               <button className="primary-button" type="button" disabled={added || adding} onClick={() => onAdd(exercise)}>
                 {added ? "已在今日训练中" : adding ? "正在加入…" : "加入今日训练"}
               </button>
-              <a className="source-link" href={`${SOURCE_BASE}/videos`} target="_blank" rel="noreferrer">在数据源中查看</a>
             </div>
           </article>
         </div>
@@ -234,13 +271,32 @@ export default function App({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [view, setView] = useState<AppView>("library");
+  const [trainingSection, setTrainingSection] = useState<TrainingSection>("record");
   const [workoutRepository, setWorkoutRepository] = useState<WorkoutRepository | null>(null);
+  const [companionRepository, setCompanionRepository] = useState<CompanionRepository | null>(null);
   const [activeSession, setActiveSession] = useState<WorkoutSession | null>(null);
   const [workoutHistory, setWorkoutHistory] = useState<WorkoutSession[]>([]);
+  const [trainingPlans, setTrainingPlans] = useState<TrainingPlan[]>([]);
+  const [trainingPlanState, setTrainingPlanState] = useState<TrainingPlanState>({ activePlanId: null, updatedAt: new Date(0).toISOString() });
+  const [trainingDataInitialDate, setTrainingDataInitialDate] = useState<Date | null>(null);
+  const [trainingDataRefreshKey, setTrainingDataRefreshKey] = useState(0);
   const [workoutLoading, setWorkoutLoading] = useState(true);
   const [workoutBusy, setWorkoutBusy] = useState(false);
   const [workoutError, setWorkoutError] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [companionInstances, setCompanionInstances] = useState<CompanionInstance[]>([]);
+  const [activeCompanion, setActiveCompanion] = useState<CompanionInstance | null>(null);
+  const [companionProgress, setCompanionProgress] = useState<CompanionProgress | null>(null);
+  const [companionSettings, setCompanionSettings] = useState<CompanionSettings>(INITIAL_COMPANION_SETTINGS);
+  const [companionMilestones, setCompanionMilestones] = useState<CompanionMilestone[]>([]);
+  const [companionBusy, setCompanionBusy] = useState(false);
+  const [companionError, setCompanionError] = useState("");
+  const [workoutRuntime, setWorkoutRuntime] = useState<WorkoutRuntimeState | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [finishReason, setFinishReason] = useState<WorkoutEndReason>("completed");
+  const [companionSettlement, setCompanionSettlement] = useState<CompanionSettlement | null>(null);
+  const [settlementSummary, setSettlementSummary] = useState<ReturnType<typeof summarizeDay> | null>(null);
+  const [recoverySessionId, setRecoverySessionId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<SyncState>(() => ({
     ...INITIAL_SYNC_STATE,
     status: authOffline ? "offline" : "idle",
@@ -250,11 +306,11 @@ export default function App({
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState("");
   const activeSessionRef = useRef<WorkoutSession | null>(null);
+  const workoutRuntimeRef = useRef<WorkoutRuntimeState | null>(null);
   const syncServiceRef = useRef<SyncService | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyDraftRef = useRef(false);
   const saveGenerationRef = useRef(0);
-  const runningInTauri = "__TAURI_INTERNALS__" in window;
   const profileService = useMemo(
     () => createProfileService(authService.getClient(), authUser.id),
     [authService, authUser.id],
@@ -263,6 +319,11 @@ export default function App({
   const setActiveWorkout = (session: WorkoutSession | null) => {
     activeSessionRef.current = session;
     setActiveSession(session);
+  };
+
+  const setRuntime = (runtime: WorkoutRuntimeState | null) => {
+    workoutRuntimeRef.current = runtime;
+    setWorkoutRuntime(runtime);
   };
 
   const loadExercises = async () => {
@@ -309,20 +370,47 @@ export default function App({
     const initializeWorkoutStorage = async () => {
       setWorkoutLoading(true);
       try {
-        const repository = await createWorkoutRepository(authUser.id);
+        const [repository, partnerRepository] = await Promise.all([
+          createWorkoutRepository(authUser.id),
+          createCompanionRepository(authUser.id),
+        ]);
         let syncService: SyncService | null = null;
         if (repository.mode === "sqlite" && authService.configured) {
-          syncService = new SyncService(repository, authService.getClient(), authUser.id);
+          syncService = new SyncService(repository, authService.getClient(), authUser.id, partnerRepository);
           syncServiceRef.current = syncService;
           let previousStatus: SyncState["status"] | null = null;
           const unsubscribe = syncService.subscribe((state) => {
             if (!active) return;
             setSyncState(state);
             if (previousStatus === "syncing" && (state.status === "idle" || state.status === "conflict") && !dirtyDraftRef.current) {
-              void Promise.all([repository.getActiveSession(), repository.listHistory()]).then(([session, history]) => {
+              void Promise.all([
+                repository.getActiveSession(),
+                repository.listHistory(),
+                repository.listTrainingPlans(),
+                repository.getTrainingPlanState(),
+                partnerRepository.listInstances(),
+                partnerRepository.getActiveInstance(),
+                partnerRepository.getSettings(),
+              ]).then(async ([session, history, plans, planState, instances, partner, partnerSettings]) => {
                 if (!active || dirtyDraftRef.current) return;
                 setActiveWorkout(session);
                 setWorkoutHistory(history);
+                setTrainingPlans(plans);
+                setTrainingPlanState(planState);
+                setCompanionInstances(instances);
+                setActiveCompanion(partner);
+                setCompanionSettings(partnerSettings);
+                if (partner) {
+                  const allSessions = session ? [session, ...history] : history;
+                  const [partnerProgress, partnerMilestones] = await Promise.all([
+                    partnerRepository.getProgress(partner.id, companionDefinitionFor(partner), allSessions),
+                    partnerRepository.listMilestones(partner.id),
+                  ]);
+                  if (!active || dirtyDraftRef.current) return;
+                  setCompanionProgress(partnerProgress);
+                  setCompanionMilestones(partnerMilestones);
+                }
+                setTrainingDataRefreshKey((value) => value + 1);
               });
             }
             previousStatus = state.status;
@@ -346,14 +434,35 @@ export default function App({
             error: navigator.onLine ? undefined : "当前离线，训练已安全保存在本机。",
           });
         }
-        const [session, history] = await Promise.all([
+        const [session, history, plans, planState, instances, partner, partnerSettings] = await Promise.all([
           repository.getActiveSession(),
           repository.listHistory(),
+          repository.listTrainingPlans(),
+          repository.getTrainingPlanState(),
+          partnerRepository.listInstances(),
+          partnerRepository.getActiveInstance(),
+          partnerRepository.getSettings(),
         ]);
         if (!active) return;
         setWorkoutRepository(repository);
+        setCompanionRepository(partnerRepository);
         setActiveWorkout(session);
         setWorkoutHistory(history);
+        setTrainingPlans(plans);
+        setTrainingPlanState(planState);
+        setCompanionInstances(instances);
+        setActiveCompanion(partner);
+        setCompanionSettings(partnerSettings);
+        if (partner) {
+          const allSessions = session ? [session, ...history] : history;
+          const [partnerProgress, partnerMilestones] = await Promise.all([
+            partnerRepository.getProgress(partner.id, companionDefinitionFor(partner), allSessions),
+            partnerRepository.listMilestones(partner.id),
+          ]);
+          setCompanionProgress(partnerProgress);
+          setCompanionMilestones(partnerMilestones);
+        }
+        if (session) setRuntime(await partnerRepository.getRuntimeState(session.id));
         setWorkoutError("");
         syncService?.start();
       } catch (reason) {
@@ -472,6 +581,50 @@ export default function App({
     setActiveWorkout(session);
   };
 
+  const refreshCompanionData = useCallback(async (
+    sessionsOverride?: WorkoutSession[],
+    repositoryOverride?: CompanionRepository,
+  ) => {
+    const repository = repositoryOverride || companionRepository;
+    if (!repository) return;
+    const [instances, partner, settings] = await Promise.all([
+      repository.listInstances(),
+      repository.getActiveInstance(),
+      repository.getSettings(),
+    ]);
+    const sessions = sessionsOverride || (activeSessionRef.current ? [activeSessionRef.current, ...workoutHistory] : workoutHistory);
+    setCompanionInstances(instances);
+    setActiveCompanion(partner);
+    setCompanionSettings(settings);
+    if (!partner) {
+      setCompanionProgress(null);
+      setCompanionMilestones([]);
+      setRecoverySessionId(null);
+      return;
+    }
+    const [progress, milestones] = await Promise.all([
+      repository.getProgress(partner.id, companionDefinitionFor(partner), sessions),
+      repository.listMilestones(partner.id),
+    ]);
+    setCompanionProgress(progress);
+    setCompanionMilestones(milestones);
+    const today = new Date();
+    const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+    const candidates = sessions.filter((session) => session.status === "completed" && !session.deletedAt
+      && session.companionInstanceId === partner.id && session.endedAt)
+      .sort((a, b) => new Date(b.endedAt!).getTime() - new Date(a.endedAt!).getTime());
+    let pendingRecovery: string | null = null;
+    for (const session of candidates) {
+      const ended = new Date(session.endedAt!);
+      const endedKey = `${ended.getFullYear()}-${ended.getMonth()}-${ended.getDate()}`;
+      if (endedKey === todayKey) continue;
+      const feedback = await repository.getFeedback(session.id);
+      if (!feedback?.recovery) pendingRecovery = session.id;
+      break;
+    }
+    setRecoverySessionId(pendingRecovery);
+  }, [companionRepository, workoutHistory]);
+
   const handleAddExercise = async (exercise: Exercise) => {
     if (!workoutRepository) {
       setWorkoutError("本地训练记录仍在准备，请稍后再试。");
@@ -484,7 +637,8 @@ export default function App({
       const result = await workoutRepository.addExercise(exercise.id);
       setActiveWorkout(result.session);
       setSelected(null);
-      setView("today");
+      setView("training");
+      setTrainingSection("record");
       void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "加入今日训练失败。");
@@ -541,18 +695,170 @@ export default function App({
     }
   };
 
-  const handleFinishWorkout = async () => {
+  const runtimeWithElapsed = (runtime: WorkoutRuntimeState | null, at = new Date()) => {
+    if (!runtime) return null;
+    const counts = runtime.phase === "working" || runtime.phase === "resting";
+    const elapsed = counts && runtime.phaseStartedAt
+      ? Math.min(600, Math.max(0, Math.round((at.getTime() - new Date(runtime.phaseStartedAt).getTime()) / 1000)))
+      : 0;
+    return { ...runtime, accumulatedActiveSeconds: runtime.accumulatedActiveSeconds + elapsed };
+  };
+
+  const saveRuntime = async (runtime: WorkoutRuntimeState | null) => {
+    setRuntime(runtime);
+    if (!companionRepository || !runtime) return;
+    await companionRepository.saveRuntimeState(runtime);
+  };
+
+  const handleStartSet = async (workoutExerciseId: string, setId: string) => {
+    const session = activeSessionRef.current;
+    if (!session || !workoutRepository || !companionRepository) return;
+    setWorkoutError("");
+    try {
+      let nextSession = session;
+      if (!session.companionInstanceId && activeCompanion) {
+        nextSession = await workoutRepository.attachCompanion(session.id, activeCompanion.id);
+        setActiveWorkout(nextSession);
+      }
+      const exercise = nextSession.exercises.find((item) => item.id === workoutExerciseId);
+      const current = runtimeWithElapsed(workoutRuntimeRef.current);
+      const preparing: WorkoutRuntimeState = {
+        sessionId: session.id,
+        workoutExerciseId,
+        setId,
+        motionFamily: motionFamilyForExercise(exercise ? exerciseLookup.get(exercise.exerciseId) : undefined),
+        phase: "preparing",
+        phaseStartedAt: new Date().toISOString(),
+        restEndsAt: null,
+        accumulatedActiveSeconds: current?.accumulatedActiveSeconds || 0,
+      };
+      await saveRuntime(preparing);
+      window.setTimeout(() => {
+        const latest = workoutRuntimeRef.current;
+        if (!latest || latest.sessionId !== session.id || latest.setId !== setId || latest.phase !== "preparing") return;
+        void saveRuntime({ ...latest, phase: "working", phaseStartedAt: new Date().toISOString() });
+      }, companionSettings.reduceMotion ? 0 : 700);
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "开始本组失败。");
+    }
+  };
+
+  const handleCompleteSet = (workoutExerciseId: string, set: WorkoutSet) => {
+    if (set.completed) {
+      handleSetChange(set.id, { completed: false, completedAt: null });
+      return;
+    }
+    handleSetChange(set.id, { completed: true, completedAt: new Date().toISOString() });
+    const session = activeSessionRef.current;
+    if (!session || !companionRepository) return;
+    void (async () => {
+      try {
+        let nextSession = session;
+        if (!session.companionInstanceId && activeCompanion && workoutRepository) {
+          nextSession = await workoutRepository.attachCompanion(session.id, activeCompanion.id);
+          setActiveWorkout({
+            ...nextSession,
+            exercises: nextSession.exercises.map((exercise) => ({
+              ...exercise,
+              sets: exercise.sets.map((item) => item.id === set.id ? { ...item, completed: true, completedAt: new Date().toISOString() } : item),
+            })),
+          });
+        }
+        const current = runtimeWithElapsed(workoutRuntimeRef.current);
+        const exercise = nextSession.exercises.find((item) => item.id === workoutExerciseId);
+        const startedAt = new Date();
+        const resting: WorkoutRuntimeState = {
+          sessionId: session.id,
+          workoutExerciseId,
+          setId: set.id,
+          motionFamily: motionFamilyForExercise(exercise ? exerciseLookup.get(exercise.exerciseId) : undefined),
+          phase: "resting",
+          phaseStartedAt: startedAt.toISOString(),
+          restEndsAt: new Date(startedAt.getTime() + companionSettings.defaultRestSeconds * 1000).toISOString(),
+          accumulatedActiveSeconds: current?.accumulatedActiveSeconds || 0,
+        };
+        await saveRuntime(resting);
+      } catch (reason) {
+        setWorkoutError(reason instanceof Error ? reason.message : "组间休息计时启动失败。");
+      }
+    })();
+  };
+
+  const transitionRuntime = async (phase: WorkoutRuntimeState["phase"], clearRest = false) => {
+    const current = runtimeWithElapsed(workoutRuntimeRef.current);
+    if (!current) return;
+    await saveRuntime({ ...current, phase, phaseStartedAt: phase === "paused" || phase === "idle" ? null : new Date().toISOString(),
+      restEndsAt: clearRest ? null : current.restEndsAt });
+  };
+
+  const requestFinishWorkout = (reason: WorkoutEndReason) => {
+    setFinishReason(reason);
+    setFeedbackOpen(true);
+  };
+
+  const finishWorkout = async (feedback: { rpe: number | null; feeling: WorkoutFeeling | null }) => {
     const session = activeSessionRef.current;
     if (!workoutRepository || !session) return;
     setWorkoutBusy(true);
     setWorkoutError("");
+    setCompanionError("");
     try {
       await persistDraft();
-      await workoutRepository.completeSession(session.id, new Date().toISOString());
+      if (companionRepository) await companionRepository.saveFeedback(session.id, { ...feedback, recovery: null });
+      const endedAt = new Date().toISOString();
+      const finalRuntime = runtimeWithElapsed(workoutRuntimeRef.current, new Date(endedAt));
+      const activeDurationSeconds = finalRuntime?.accumulatedActiveSeconds || 0;
+      await workoutRepository.completeSession(session.id, endedAt, {
+        endReason: finishReason,
+        activeDurationSeconds,
+        companionInstanceId: session.companionInstanceId || activeCompanion?.id || null,
+      });
+      if (companionRepository) await companionRepository.clearRuntimeState(session.id);
+      setRuntime(null);
       const history = await workoutRepository.listHistory();
+      const completedSession = history.find((item) => item.id === session.id) || { ...session, endedAt, status: "completed" as const,
+        endReason: finishReason, activeDurationSeconds, companionInstanceId: session.companionInstanceId || activeCompanion?.id || null };
+      const summary = summarizeSessions([completedSession]);
+      setSettlementSummary(summary);
+      const companionId = completedSession.companionInstanceId;
+      const companion = companionId ? companionInstances.find((item) => item.id === companionId) || activeCompanion : null;
+      const definition = companion ? companionDefinitionFor(companion) : null;
+      if (companionRepository && companion && definition) {
+        const completedSetCount = completedSession.exercises.reduce((sum, item) => sum + item.sets.filter((set) => set.completed).length, 0);
+        const plannedSetCount = completedSession.sourcePlanDayId
+          ? completedSession.exercises.reduce((sum, item) => sum + item.sets.length, 0)
+          : 0;
+        const pastExerciseIds = new Set(workoutHistory.flatMap((item) => item.exercises.map((exercise) => exercise.exerciseId)));
+        const newExerciseCount = completedSession.exercises.filter((item) => !pastExerciseIds.has(item.exerciseId)).length;
+        const personalRecordCount = completedSession.exercises.filter((exercise) => {
+          const best = (sets: WorkoutSet[]) => Math.max(0, ...sets.filter((set) => set.completed && set.weightKg && set.reps)
+            .map((set) => (set.weightKg || 0) * (1 + (set.reps || 0) / 30)));
+          const currentBest = best(exercise.sets);
+          const previousBest = Math.max(0, ...workoutHistory.flatMap((item) => item.exercises)
+            .filter((item) => item.exerciseId === exercise.exerciseId).map((item) => best(item.sets)));
+          return previousBest > 0 && currentBest >= previousBest * 1.025;
+        }).length;
+        const settlement = await companionRepository.settleWorkout(companion.id, definition, {
+          session: completedSession,
+          summary,
+          effectiveDurationMinutes: Math.round(activeDurationSeconds / 60),
+          planCompletionRate: plannedSetCount ? completedSetCount / plannedSetCount : 0,
+          newExerciseCount,
+          personalRecordCount,
+          bodyParts: [...new Set(completedSession.exercises.map((item) => exerciseLookup.get(item.exerciseId)?.body_part).filter((value): value is string => Boolean(value)))],
+          feedback,
+          endedReason: finishReason,
+          occurredAt: endedAt,
+        });
+        setCompanionSettlement(settlement);
+      }
+      setFeedbackOpen(false);
       setWorkoutHistory(history);
       setActiveWorkout(await workoutRepository.getActiveSession());
       setLastSavedAt(new Date());
+      setTrainingDataRefreshKey((value) => value + 1);
+      await refreshCompanionData(history);
       void syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "完成训练失败。");
@@ -568,12 +874,206 @@ export default function App({
     try {
       await persistDraft();
       await workoutRepository.deleteSession(sessionId);
-      setWorkoutHistory(await workoutRepository.listHistory());
+      await companionRepository?.reverseWorkoutGrowth(sessionId);
+      const history = await workoutRepository.listHistory();
+      setWorkoutHistory(history);
+      await refreshCompanionData(history);
+      setTrainingDataRefreshKey((value) => value + 1);
       await syncServiceRef.current?.syncNow();
     } catch (reason) {
       setWorkoutError(reason instanceof Error ? reason.message : "删除训练记录失败。");
+      throw reason;
     } finally {
       setWorkoutBusy(false);
+    }
+  };
+
+  const refreshTrainingPlans = async () => {
+    if (!workoutRepository) return;
+    const [plans, planState] = await Promise.all([
+      workoutRepository.listTrainingPlans(),
+      workoutRepository.getTrainingPlanState(),
+    ]);
+    setTrainingPlans(plans);
+    setTrainingPlanState(planState);
+  };
+
+  const handleSaveTrainingPlan = async (input: TrainingPlanInput) => {
+    if (!workoutRepository) throw new Error("训练计划存储仍在准备，请稍后再试。");
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      const saved = await workoutRepository.saveTrainingPlan(input);
+      if (!trainingPlanState.activePlanId) await workoutRepository.setActiveTrainingPlan(saved.id);
+      await refreshTrainingPlans();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "训练计划保存失败。");
+      throw reason;
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleActivateTrainingPlan = async (planId: string | null) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await workoutRepository.setActiveTrainingPlan(planId);
+      await refreshTrainingPlans();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "训练计划状态保存失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleDuplicateTrainingPlan = async (planId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await workoutRepository.duplicateTrainingPlan(planId);
+      await refreshTrainingPlans();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "复制训练计划失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleDeleteTrainingPlan = async (planId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await workoutRepository.deleteTrainingPlan(planId);
+      await refreshTrainingPlans();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "删除训练计划失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const handleStartPlanDay = async (planDayId: string) => {
+    if (!workoutRepository) return;
+    setWorkoutBusy(true);
+    setWorkoutError("");
+    try {
+      await persistDraft();
+      setActiveWorkout(await workoutRepository.startPlannedWorkout(planDayId));
+      setView("training");
+      setTrainingSection("record");
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setWorkoutError(reason instanceof Error ? reason.message : "从计划开始训练失败。");
+    } finally {
+      setWorkoutBusy(false);
+    }
+  };
+
+  const loadCompletedSessions = useCallback(async (startAt: string, endAt: string) => {
+    if (!workoutRepository) return [];
+    return workoutRepository.listCompletedSessionsBetween(startAt, endAt);
+  }, [workoutRepository]);
+
+  const showTodayTrainingData = () => {
+    setTrainingDataInitialDate(new Date());
+    setView("training");
+    setTrainingSection("data");
+  };
+
+  const handleCreateCompanion = async (definition: CompanionDefinition, displayName: string) => {
+    if (!companionRepository) throw new Error("搭档数据仍在准备，请稍后再试。");
+    setCompanionBusy(true);
+    setCompanionError("");
+    try {
+      await companionRepository.createInstance(definition, displayName);
+      await refreshCompanionData();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "搭档创建失败。";
+      setCompanionError(message);
+      throw reason;
+    } finally {
+      setCompanionBusy(false);
+    }
+  };
+
+  const handleSwitchCompanion = async (companionId: string) => {
+    if (!companionRepository) return;
+    if (activeSessionRef.current?.companionInstanceId || (workoutRuntimeRef.current && workoutRuntimeRef.current.phase !== "idle")) {
+      setCompanionError("这场训练已经和当前搭档开始了。完成或结束训练后再切换，成长值就不会重复计算。");
+      return;
+    }
+    setCompanionBusy(true);
+    setCompanionError("");
+    try {
+      await companionRepository.switchActive(companionId);
+      await refreshCompanionData();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setCompanionError(reason instanceof Error ? reason.message : "搭档切换失败。");
+    } finally {
+      setCompanionBusy(false);
+    }
+  };
+
+  const handleDeleteCompanion = async (companionId: string) => {
+    if (!companionRepository) return;
+    if (activeSessionRef.current?.companionInstanceId === companionId) {
+      setCompanionError("当前训练已经绑定这名搭档，请先完成或结束训练。");
+      return;
+    }
+    setCompanionBusy(true);
+    setCompanionError("");
+    try {
+      await companionRepository.deleteInstance(companionId);
+      await refreshCompanionData();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setCompanionError(reason instanceof Error ? reason.message : "搭档删除失败。");
+    } finally {
+      setCompanionBusy(false);
+    }
+  };
+
+  const handleSaveCompanionSettings = async (settings: CompanionSettings) => {
+    if (!companionRepository) return;
+    setCompanionBusy(true);
+    setCompanionError("");
+    try {
+      setCompanionSettings(await companionRepository.saveSettings(settings));
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setCompanionError(reason instanceof Error ? reason.message : "搭档设置保存失败。");
+    } finally {
+      setCompanionBusy(false);
+    }
+  };
+
+  const handleRecoveryFeedback = async (sessionId: string, recovery: RecoveryFeeling) => {
+    if (!companionRepository) return;
+    setCompanionBusy(true);
+    setCompanionError("");
+    try {
+      await companionRepository.saveRecovery(sessionId, recovery);
+      if (recovery === "pain") {
+        const settings = await companionRepository.getSettings();
+        await companionRepository.saveSettings({ ...settings, recoveryMode: true });
+      }
+      setRecoverySessionId(null);
+      await refreshCompanionData();
+      void syncServiceRef.current?.syncNow();
+    } catch (reason) {
+      setCompanionError(reason instanceof Error ? reason.message : "恢复状态保存失败。");
+    } finally {
+      setCompanionBusy(false);
     }
   };
 
@@ -647,6 +1147,7 @@ export default function App({
       if (pendingCount > 0) throw new Error(`还有 ${pendingCount} 项记录尚未同步，暂时不能退出登录。`);
       syncService?.stop();
       await authService.signOut();
+      await companionRepository?.clearUserData();
       await workoutRepository.clearUserData();
     } finally {
       setAccountBusy(false);
@@ -660,6 +1161,7 @@ export default function App({
     try {
       syncServiceRef.current?.stop();
       await authService.deleteAccount(password);
+      await companionRepository?.clearUserData();
       await workoutRepository.clearUserData();
     } finally {
       setAccountBusy(false);
@@ -687,6 +1189,10 @@ export default function App({
   };
 
   const activeExerciseIds = new Set(activeSession?.exercises.map((exercise) => exercise.exerciseId) || []);
+  const workoutCompanion = activeSession?.companionInstanceId
+    ? companionInstances.find((item) => item.id === activeSession.companionInstanceId) || activeCompanion
+    : activeCompanion;
+  const workoutCompanionDefinition = companionDefinitionFor(workoutCompanion || null);
   const syncStatusText = syncState.status === "syncing"
     ? "正在同步云端"
     : syncState.status === "offline"
@@ -700,6 +1206,12 @@ export default function App({
             : workoutRepository?.mode === "browser-preview" ? "浏览器预览不上传" : "云端已同步";
   const topbarStatus = view === "account"
     ? "登录与账号设置"
+    : view === "partner"
+      ? companionError
+        ? "搭档数据需要处理"
+        : activeCompanion
+          ? `${activeCompanion.displayName} · ${syncStatusText}`
+          : `${COMPANION_CATALOG.length} 名搭档可选择 · ${syncStatusText}`
     : view === "library"
       ? error ? "动作数据加载失败" : loading ? "正在读取动作数据…" : `${exercises.length.toLocaleString("zh-CN")} 个动作 · ${syncStatusText}`
       : workoutError ? "训练记录需要处理" : workoutLoading ? "正在打开本地记录…" : syncStatusText;
@@ -718,13 +1230,13 @@ export default function App({
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6M7 6v12M17 6v12M20 9v6M7 12h10" /></svg>
               <span>动作指导</span>
             </button>
-            <button className={`nav-item${view === "today" ? " active" : ""}`} type="button" aria-current={view === "today" ? "page" : undefined} onClick={() => setView("today")}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Z" /></svg>
-              <span>今日训练</span>{activeSession && <span className="nav-badge">{activeSession.exercises.length}</span>}
-            </button>
-            <button className={`nav-item${view === "history" ? " active" : ""}`} type="button" aria-current={view === "history" ? "page" : undefined} onClick={() => setView("history")}>
+            <button className={`nav-item${view === "training" ? " active" : ""}`} type="button" aria-current={view === "training" ? "page" : undefined} onClick={() => setView("training")}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9M12 19V5M19 19v-7" /></svg>
-              <span>训练记录</span>{workoutHistory.length > 0 && <span className="nav-badge">{workoutHistory.length}</span>}
+              <span>训练</span>{activeSession && <span className="nav-badge">{activeSession.exercises.length}</span>}
+            </button>
+            <button className={`nav-item${view === "partner" ? " active" : ""}`} type="button" aria-current={view === "partner" ? "page" : undefined} onClick={() => setView("partner")}>
+              <img className="nav-partner-icon" src={appIcon} alt="" aria-hidden="true" />
+              <span>搭档</span>{activeCompanion && <span className="nav-badge">{activeCompanion.level}</span>}
             </button>
             <button className={`nav-item${view === "account" ? " active" : ""}`} type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => setView("account")}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21c.7-4.2 3.4-6 8-6s7.3 1.8 8 6" /></svg>
@@ -732,13 +1244,6 @@ export default function App({
             </button>
           </nav>
 
-          <div className="sidebar-note">
-            <span className="status-dot" aria-hidden="true"></span>
-            <div>
-              <strong>{runningInTauri ? "Tauri 桌面模式" : "浏览器开发预览"}</strong>
-              <p>{runningInTauri ? "训练先存本机，联网后自动同步。" : "预览数据只保存在这个浏览器中。"}</p>
-            </div>
-          </div>
         </aside>
 
         <main className="main-content">
@@ -754,7 +1259,7 @@ export default function App({
               user={authUser}
               profile={profile}
               syncState={syncState}
-              busy={accountBusy || workoutBusy}
+              busy={accountBusy || workoutBusy || companionBusy}
               onLogout={handleLogout}
               onDelete={handleDeleteAccount}
             />
@@ -860,32 +1365,87 @@ export default function App({
             </footer>
           </div>}
 
-          {view === "today" && (
-            <TodayWorkoutView
-              session={activeSession}
-              todaySummary={todaySummary}
-              exerciseLookup={exerciseLookup}
-              busy={workoutBusy}
-              error={workoutError}
-              storageMode={workoutRepository?.mode || null}
-              lastSavedAt={lastSavedAt}
-              onBrowse={() => setView("library")}
-              onSetChange={handleSetChange}
-              onAddSet={(id) => void handleAddSet(id)}
-              onDeleteSet={(id) => void handleDeleteSet(id)}
-              onRemoveExercise={(id) => void handleRemoveExercise(id)}
-              onFinish={() => void handleFinishWorkout()}
-            />
+          {view === "training" && (
+            <>
+              <div className="page-wrap training-tabs-wrap">
+                <TrainingTabs section={trainingSection} onChange={(section) => {
+                  setTrainingDataInitialDate(null);
+                  setTrainingSection(section);
+                }} />
+              </div>
+              {trainingSection === "plan" && (
+                <TrainingPlanView
+                  plans={trainingPlans}
+                  planState={trainingPlanState}
+                  exercises={exercises}
+                  activeSession={activeSession}
+                  busy={workoutBusy || workoutLoading}
+                  error={workoutError}
+                  onSave={handleSaveTrainingPlan}
+                  onActivate={handleActivateTrainingPlan}
+                  onDuplicate={handleDuplicateTrainingPlan}
+                  onDelete={handleDeleteTrainingPlan}
+                  onStartDay={handleStartPlanDay}
+                />
+              )}
+              {trainingSection === "record" && (
+                <TodayWorkoutView
+                  session={activeSession}
+                  todaySummary={todaySummary}
+                  exerciseLookup={exerciseLookup}
+                  busy={workoutBusy}
+                  error={workoutError}
+                  lastSavedAt={lastSavedAt}
+                  companion={workoutCompanion || null}
+                  companionDefinition={workoutCompanionDefinition}
+                  companionSettings={companionSettings}
+                  runtime={workoutRuntime}
+                  onBrowse={() => setView("library")}
+                  onViewTodayData={showTodayTrainingData}
+                  onSetChange={handleSetChange}
+                  onAddSet={(id) => void handleAddSet(id)}
+                  onDeleteSet={(id) => void handleDeleteSet(id)}
+                  onRemoveExercise={(id) => void handleRemoveExercise(id)}
+                  onStartSet={(exerciseId, setId) => void handleStartSet(exerciseId, setId)}
+                  onCompleteSet={handleCompleteSet}
+                  onPauseRuntime={() => void transitionRuntime("paused")}
+                  onResumeRuntime={() => void transitionRuntime("working", true)}
+                  onSkipRest={() => void transitionRuntime("idle", true)}
+                  onOpenPartner={() => setView("partner")}
+                  onFinish={() => requestFinishWorkout("completed")}
+                  onFinishEarly={() => requestFinishWorkout("early_stop")}
+                />
+              )}
+              {trainingSection === "data" && (
+                <TrainingDataView
+                  exerciseLookup={exerciseLookup}
+                  refreshKey={trainingDataRefreshKey}
+                  initialDate={trainingDataInitialDate}
+                  loadSessions={loadCompletedSessions}
+                  onInitialDateConsumed={() => setTrainingDataInitialDate(null)}
+                  onDeleteSession={handleDeleteSession}
+                />
+              )}
+            </>
           )}
 
-          {view === "history" && (
-            <WorkoutHistoryView
-              sessions={workoutHistory}
-              exerciseLookup={exerciseLookup}
-              error={workoutError}
-              busy={workoutBusy}
-              onBrowse={() => setView("library")}
-              onDeleteSession={(id) => void handleDeleteSession(id)}
+          {view === "partner" && (
+            <CompanionView
+              catalog={COMPANION_CATALOG}
+              instances={companionInstances}
+              active={activeCompanion}
+              progress={companionProgress}
+              settings={companionSettings}
+              milestones={companionMilestones}
+              busy={companionBusy || workoutBusy || workoutLoading}
+              error={companionError}
+              recoverySessionId={recoverySessionId}
+              onCreate={handleCreateCompanion}
+              onSwitch={handleSwitchCompanion}
+              onDelete={handleDeleteCompanion}
+              onSaveSettings={handleSaveCompanionSettings}
+              onRecovery={handleRecoveryFeedback}
+              onGoTrain={() => { setView("training"); setTrainingSection("record"); }}
             />
           )}
 
@@ -916,6 +1476,20 @@ export default function App({
         adding={workoutBusy || workoutLoading}
       />
       <ActiveWorkoutConflict sessions={syncState.conflicts} onResolve={(id) => void handleResolveConflict(id)} />
+      <WorkoutFeedbackDialog
+        open={feedbackOpen}
+        busy={workoutBusy}
+        onSubmit={(rpe, feeling) => void finishWorkout({ rpe, feeling })}
+        onSkip={() => void finishWorkout({ rpe: null, feeling: null })}
+        onCancel={() => setFeedbackOpen(false)}
+      />
+      <CompanionSettlementDialog
+        settlement={companionSettlement}
+        summary={settlementSummary}
+        definition={companionSettlement ? companionDefinitionFor(companionSettlement.companion) : null}
+        settings={companionSettings}
+        onClose={() => setCompanionSettlement(null)}
+      />
     </>
   );
 }

@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { TrainingCompanionPanel } from "./CompanionViews";
 import { exerciseName, mediaUrl } from "./exercise-data";
 import { summarizeSessions } from "./workout-summary";
+import type { CompanionDefinition, CompanionInstance, CompanionSettings, WorkoutRuntimeState } from "./companion-types";
 import type { IndexedExercise } from "./types";
 import type { WorkoutSession, WorkoutSet, WorkoutSummary } from "./workout-types";
 
@@ -71,7 +73,7 @@ function EmptyWorkout({ onBrowse }: { onBrowse: () => void }) {
   );
 }
 
-function DailySummary({ summary, lookup }: { summary: WorkoutSummary; lookup: ExerciseLookup }) {
+function DailySummary({ summary, lookup, onViewData }: { summary: WorkoutSummary; lookup: ExerciseLookup; onViewData: () => void }) {
   if (summary.sessionCount === 0) return null;
   return (
     <section className="daily-summary" aria-labelledby="dailySummaryTitle">
@@ -100,6 +102,7 @@ function DailySummary({ summary, lookup }: { summary: WorkoutSummary; lookup: Ex
           );
         })}
       </div>
+      <button className="secondary-button summary-data-button" type="button" onClick={onViewData}>查看今日数据</button>
     </section>
   );
 }
@@ -110,14 +113,25 @@ interface TodayWorkoutProps {
   exerciseLookup: ExerciseLookup;
   busy: boolean;
   error: string;
-  storageMode: "sqlite" | "browser-preview" | null;
   lastSavedAt: Date | null;
+  companion: CompanionInstance | null;
+  companionDefinition: CompanionDefinition | null;
+  companionSettings: CompanionSettings;
+  runtime: WorkoutRuntimeState | null;
   onBrowse: () => void;
+  onViewTodayData: () => void;
   onSetChange: (setId: string, patch: Partial<WorkoutSet>) => void;
   onAddSet: (workoutExerciseId: string) => void;
   onDeleteSet: (setId: string) => void;
   onRemoveExercise: (workoutExerciseId: string) => void;
+  onStartSet: (workoutExerciseId: string, setId: string) => void;
+  onCompleteSet: (workoutExerciseId: string, set: WorkoutSet) => void;
+  onPauseRuntime: () => void;
+  onResumeRuntime: () => void;
+  onSkipRest: () => void;
+  onOpenPartner: () => void;
   onFinish: () => void;
+  onFinishEarly: () => void;
 }
 
 export function TodayWorkoutView({
@@ -126,14 +140,25 @@ export function TodayWorkoutView({
   exerciseLookup,
   busy,
   error,
-  storageMode,
   lastSavedAt,
+  companion,
+  companionDefinition,
+  companionSettings,
+  runtime,
   onBrowse,
+  onViewTodayData,
   onSetChange,
   onAddSet,
   onDeleteSet,
   onRemoveExercise,
+  onStartSet,
+  onCompleteSet,
+  onPauseRuntime,
+  onResumeRuntime,
+  onSkipRest,
+  onOpenPartner,
   onFinish,
+  onFinishEarly,
 }: TodayWorkoutProps) {
   const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
   const draftSummary = session ? summarizeSessions([session]) : null;
@@ -142,17 +167,13 @@ export function TodayWorkoutView({
   return (
     <div className="page-wrap workout-page">
       <header className="subpage-header">
-        <div><p className="eyebrow">TODAY'S WORKOUT / 今日训练</p><h1>把每一组，认真记下来。</h1><p>重量统一使用 kg；自重动作可以把重量留空或填写 0。</p></div>
-        <div className="storage-pill">
-          <span className={`status-dot${error ? " error" : ""}`}></span>
-          {storageMode === "sqlite" ? "SQLite 本地保存" : storageMode === "browser-preview" ? "浏览器预览存储" : "正在准备存储"}
-        </div>
+        <div><p className="eyebrow">TRAINING RECORD / 训练记录</p><h1>把每一组，认真记下来。</h1><p>重量统一使用 kg；自重动作可以把重量留空或填写 0。</p></div>
       </header>
 
       {error && <div className="workout-error" role="alert">{error}</div>}
 
       {!session && <EmptyWorkout onBrowse={onBrowse} />}
-      {!session && <DailySummary summary={todaySummary} lookup={exerciseLookup} />}
+      {!session && <DailySummary summary={todaySummary} lookup={exerciseLookup} onViewData={onViewTodayData} />}
 
       {session && (
         <>
@@ -163,6 +184,8 @@ export function TodayWorkoutView({
             <p>{lastSavedAt ? `${formatTime(lastSavedAt.toISOString())} 已自动保存` : "输入内容会自动保存"}</p>
           </section>
 
+          <div className="workout-training-layout">
+          <div className="workout-training-main">
           <div className="workout-exercise-list">
             {session.exercises.map((workoutExercise) => {
               const exercise = exerciseLookup.get(workoutExercise.exerciseId);
@@ -171,7 +194,11 @@ export function TodayWorkoutView({
                   <header>
                     <div className="workout-exercise-title">
                       {exercise && <img src={mediaUrl(exercise.image)} alt="" />}
-                      <div><span>动作 {workoutExercise.position + 1}</span><h2>{exercise ? exerciseName(exercise) : `动作 ${workoutExercise.exerciseId}`}</h2><p>{exercise?.name || "动作信息加载中"}</p></div>
+                      <div>
+                        <span>动作 {workoutExercise.position + 1}</span>
+                        <h2>{exercise ? exerciseName(exercise) : `动作 ${workoutExercise.exerciseId}`}</h2>
+                        <p>{exercise?.name || "动作信息加载中"}{workoutExercise.targetRepsMin && workoutExercise.targetRepsMax ? ` · 目标 ${workoutExercise.targetRepsMin}–${workoutExercise.targetRepsMax} 次` : ""}</p>
+                      </div>
                     </div>
                     {pendingRemovalId === workoutExercise.id ? (
                       <div className="remove-exercise-confirm" role="group" aria-label="确认移除动作">
@@ -194,7 +221,7 @@ export function TodayWorkoutView({
 
                   <div className="set-table" role="table" aria-label={`${exercise ? exerciseName(exercise) : "动作"}组记录`}>
                     <div className="set-row set-header" role="row">
-                      <span>组</span><span>重量（kg）</span><span>次数</span><span>完成</span><span></span>
+                      <span>组</span><span>重量（kg）</span><span>次数</span><span>节奏</span><span>完成</span><span></span>
                     </div>
                     {workoutExercise.sets.map((set, index) => (
                       <div className={`set-row${set.completed ? " completed" : ""}`} role="row" key={set.id}>
@@ -206,7 +233,8 @@ export function TodayWorkoutView({
                             ? { reps }
                             : { reps, completed: false, completedAt: null });
                         }} /></label>
-                        <button className="set-complete-button" type="button" disabled={!set.reps || set.reps < 1} aria-pressed={set.completed} title={!set.reps ? "请先填写次数" : set.completed ? "标记为未完成" : "标记为已完成"} onClick={() => onSetChange(set.id, { completed: !set.completed, completedAt: set.completed ? null : new Date().toISOString() })}><span aria-hidden="true">✓</span><span className="sr-only">{set.completed ? "已完成" : "未完成"}</span></button>
+                        <button className={`set-start-button${runtime?.setId === set.id && (runtime.phase === "working" || runtime.phase === "preparing") ? " active" : ""}`} type="button" disabled={busy || set.completed || (runtime?.phase === "working" && runtime.setId !== set.id)} onClick={() => onStartSet(workoutExercise.id, set.id)}>{runtime?.setId === set.id && (runtime.phase === "working" || runtime.phase === "preparing") ? "训练中" : "开始本组"}</button>
+                        <button className="set-complete-button" type="button" disabled={!set.reps || set.reps < 1} aria-pressed={set.completed} title={!set.reps ? "请先填写次数" : set.completed ? "标记为未完成" : "完成本组并开始休息"} onClick={() => onCompleteSet(workoutExercise.id, set)}><span aria-hidden="true">✓</span><span className="sr-only">{set.completed ? "已完成" : "未完成"}</span></button>
                         <button className="delete-set-button" type="button" disabled={busy || workoutExercise.sets.length === 1} aria-label={`删除第 ${index + 1} 组`} onClick={() => onDeleteSet(set.id)}>×</button>
                       </div>
                     ))}
@@ -220,8 +248,25 @@ export function TodayWorkoutView({
 
           <section className="finish-workout-panel">
             <div><p className="eyebrow">FINISH WORKOUT</p><h2>完成今天的训练</h2><p>只有标记为完成的组会计入总结；未完成的组仍会保留在本次历史记录中。</p></div>
-            <button className="primary-button finish-button" type="button" disabled={busy || !hasCompletedSet} title={!hasCompletedSet ? "至少完成一组后才能结束训练" : "生成今日训练总结"} onClick={onFinish}>{busy ? "正在保存…" : "完成训练并生成总结"}</button>
+            <div className="finish-workout-actions"><button className="primary-button finish-button" type="button" disabled={busy || !hasCompletedSet} title={!hasCompletedSet ? "至少完成一组后才能结束训练" : "生成今日训练总结"} onClick={onFinish}>{busy ? "正在保存…" : "完成训练并生成总结"}</button><button className="text-button" type="button" disabled={busy || !hasCompletedSet} onClick={onFinishEarly}>提前结束并保留已完成组</button></div>
           </section>
+          </div>
+          <TrainingCompanionPanel
+            companion={companion}
+            definition={companionDefinition}
+            runtime={runtime}
+            settings={companionSettings}
+            exerciseLabel={runtime?.workoutExerciseId ? (() => {
+              const item = session.exercises.find((exercise) => exercise.id === runtime.workoutExerciseId);
+              const source = item ? exerciseLookup.get(item.exerciseId) : undefined;
+              return source ? exerciseName(source) : null;
+            })() : null}
+            onOpenPartner={onOpenPartner}
+            onPause={onPauseRuntime}
+            onResume={onResumeRuntime}
+            onSkipRest={onSkipRest}
+          />
+          </div>
         </>
       )}
     </div>
